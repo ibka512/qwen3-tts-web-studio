@@ -1,0 +1,4 @@
+gradio==6.17.3
+qwen-tts==0.1.1
+soundfile==0.14.0
+torch==2.14.0

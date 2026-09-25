@@ -1,0 +1,31 @@
+# Model weights and local runtime data
+models/
+voices/
+outputs/
+history/
+exports/
+logs/
+cache/
+
+# Credentials and local settings
+.env
+.env.*
+!.env.example
+
+# Audio and model binaries
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg
+*.safetensors
+*.bin
+
+# Python environments and generated files
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+.AppleDouble/
+__MACOSX/
+._*
