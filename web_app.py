@@ -9,6 +9,7 @@ import shutil
 import threading
 import uuid
 import zipfile
+import gc
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,9 @@ from qwen_tts import Qwen3TTSModel
 ROOT = Path(os.environ.get("QWEN_TTS_ROOT", Path(__file__).resolve().parent)).expanduser().resolve()
 MODEL_DIR = Path(
     os.environ.get("QWEN_TTS_MODEL_DIR", ROOT / "models" / "Qwen3-TTS-12Hz-1.7B-Base")
+).expanduser().resolve()
+CUSTOMVOICE_MODEL_DIR = Path(
+    os.environ.get("QWEN_TTS_CUSTOM_MODEL_DIR", ROOT / "models" / "Qwen3-TTS-12Hz-1.7B-CustomVoice")
 ).expanduser().resolve()
 VOICE_DIR = ROOT / "voices"
 OUTPUT_DIR = ROOT / "outputs"
@@ -55,24 +59,71 @@ CLONE_MODES = [
     ("音频 + 逐字稿 · 模仿更完整", "icl"),
     ("仅提取音色 · 不需要逐字稿", "x_vector"),
 ]
+CUSTOM_VOICE_CHOICES = [
+    ("Uncle Fu · 男声", "Uncle_Fu"),
+    ("Ryan · 男声", "Ryan"),
+    ("Dylan · 男声", "Dylan"),
+    ("Eric · 男声", "Eric"),
+    ("Aiden · 男声", "Aiden"),
+    ("Vivian · 女声", "Vivian"),
+    ("Serena · 女声", "Serena"),
+    ("Ono Anna · 女声", "Ono_Anna"),
+    ("Sohee · 女声", "Sohee"),
+]
+CUSTOM_VOICE_LABELS = dict((speaker, label) for label, speaker in CUSTOM_VOICE_CHOICES)
+DEFAULT_CUSTOM_VOICE_INSTRUCTION = "低沉、醇厚、沉稳的纪录片播音腔，语速适中，吐字清晰，情绪克制。"
 ACCEPTED_AUDIO = {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".aiff", ".aif", ".webm"}
 INFERENCE_LOCK = threading.RLock()
 HISTORY_LOCK = threading.RLock()
 STOP_REQUESTED = threading.Event()
 PROMPT_CACHE: dict[str, Any] = {}
 
-if not MODEL_DIR.is_dir() or not (MODEL_DIR / "model.safetensors").is_file():
-    raise FileNotFoundError(f"模型文件没有找到：{MODEL_DIR}")
+MODEL: Any = None
+MODEL_KIND: str | None = None
 
-LOG.info("Loading Qwen3-TTS Base from %s", MODEL_DIR)
-MODEL = Qwen3TTSModel.from_pretrained(
-    str(MODEL_DIR),
-    device_map="mps",
-    dtype=torch.bfloat16,
-    attn_implementation=None,
-    local_files_only=True,
-)
-LOG.info("Model ready: device=mps, dtype=bfloat16")
+
+def _ensure_model(kind: str):
+    """Load one local checkpoint at a time to keep Apple Silicon memory use bounded."""
+    global MODEL, MODEL_KIND
+    if kind not in {"clone", "custom_voice"}:
+        raise ValueError("不支持的音色模式。")
+    if MODEL is not None and MODEL_KIND == kind:
+        return MODEL
+
+    model_dir = MODEL_DIR if kind == "clone" else CUSTOMVOICE_MODEL_DIR
+    if not model_dir.is_dir() or not (model_dir / "model.safetensors").is_file():
+        raise FileNotFoundError(f"模型文件没有找到：{model_dir}")
+
+    if MODEL is not None:
+        try:
+            torch.mps.synchronize()
+        except Exception:
+            pass
+        if MODEL_KIND == "clone":
+            PROMPT_CACHE.clear()
+        MODEL = None
+        MODEL_KIND = None
+        gc.collect()
+        try:
+            torch.mps.empty_cache()
+        except Exception:
+            pass
+
+    label = "Base" if kind == "clone" else "CustomVoice"
+    LOG.info("Loading Qwen3-TTS %s from %s", label, model_dir)
+    MODEL = Qwen3TTSModel.from_pretrained(
+        str(model_dir),
+        device_map="mps",
+        dtype=torch.bfloat16,
+        attn_implementation=None,
+        local_files_only=True,
+    )
+    MODEL_KIND = kind
+    LOG.info("%s model ready: device=mps, dtype=bfloat16", label)
+    return MODEL
+
+
+_ensure_model("clone")
 
 CSS = r"""
 :root {
@@ -288,7 +339,7 @@ HEADER_HTML = """
     <h1 class="header-title">Qwen3-TTS</h1>
   </div>
   <div class="header-side">
-    <span class="local-pill">Base · 1.7B</span>
+    <span class="local-pill">双模式 · 1.7B</span>
   </div>
 </div>
 """
@@ -356,9 +407,6 @@ def _profile_dir(profile_id: str, allow_trash: bool = False) -> Path:
 def load_prompt(profile_id: str, allow_trash: bool = False):
     if not profile_id:
         raise ValueError("请先保存并选择一个音色档案。")
-    if profile_id in PROMPT_CACHE:
-        return PROMPT_CACHE[profile_id]
-
     profile_dir = _profile_dir(profile_id, allow_trash=allow_trash)
     metadata = _read_profile(profile_dir)
     if not metadata:
@@ -367,6 +415,9 @@ def load_prompt(profile_id: str, allow_trash: bool = False):
     if audio_path.parent != profile_dir:
         raise ValueError("档案中的参考音频路径无效。")
     with INFERENCE_LOCK:
+        _ensure_model("clone")
+        if profile_id in PROMPT_CACHE:
+            return PROMPT_CACHE[profile_id]
         prompt_items = MODEL.create_voice_clone_prompt(
             ref_audio=str(audio_path),
             ref_text=(metadata.get("ref_text") or None),
@@ -461,6 +512,7 @@ def save_voice_profile(name: str, audio_file: str, ref_text: str, mode: str, pro
         shutil.copyfile(source, saved_audio)
         progress(0.15, desc="正在载入音色")
         with INFERENCE_LOCK:
+            _ensure_model("clone")
             prompt_items = MODEL.create_voice_clone_prompt(
                 ref_audio=str(saved_audio), ref_text=metadata["ref_text"] or None,
                 x_vector_only_mode=(mode == "x_vector"),
@@ -684,15 +736,29 @@ def load_history_settings(batch_id: str | None):
         params = record["params"]
         choices = profile_choices()
         available_ids = {value for _, value in choices}
+        mode = record.get("model_mode", "clone")
+        if mode not in {"clone", "custom_voice"}:
+            mode = "clone"
         profile_id = record.get("profile_id")
         profile_is_available = profile_id in available_ids
         selected_id = profile_id if profile_is_available else (choices[0][1] if choices else None)
-        status = (
-            f"已载入 **{html.escape(record.get('profile_name', '音色'))}** 的设置。可回到工作台修改文本后生成。"
-            if profile_is_available else "这批记录使用的音色当前在回收站或已不可用；请先恢复音色，再回到工作台生成。"
-        )
+        if mode == "custom_voice":
+            speaker = record.get("speaker")
+            if speaker not in CUSTOM_VOICE_LABELS:
+                speaker = "Uncle_Fu"
+            status = f"已载入官方音色 **{html.escape(CUSTOM_VOICE_LABELS[speaker])}** 的设置。可回到工作台修改文本后生成。"
+        else:
+            status = (
+                f"已载入 **{html.escape(record.get('profile_name', '音色'))}** 的设置。可回到工作台修改文本后生成。"
+                if profile_is_available else "这批记录使用的音色当前在回收站或已不可用；请先恢复音色，再回到工作台生成。"
+            )
         return (
+            gr.update(value=mode),
+            gr.update(visible=(mode == "clone")),
+            gr.update(visible=(mode == "custom_voice")),
             gr.update(choices=choices, value=selected_id),
+            gr.update(value=speaker if mode == "custom_voice" else "Uncle_Fu"),
+            params.get("instruction", DEFAULT_CUSTOM_VOICE_INSTRUCTION),
             "\n".join(item["text"] for item in record["lines"]),
             gr.update(value=params.get("language", "Auto")), bool(params.get("do_sample", True)),
             params.get("temperature", 0.9), params.get("top_p", 1.0), params.get("top_k", 50),
@@ -700,7 +766,11 @@ def load_history_settings(batch_id: str | None):
             status,
         )
     except Exception as exc:
-        return (gr.update(), "", gr.update(), True, 0.9, 1.0, 50, 1.05, 2048, f"无法载入设置：{html.escape(str(exc))}")
+        return (
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), DEFAULT_CUSTOM_VOICE_INSTRUCTION,
+            "", gr.update(), True, 0.9, 1.0, 50, 1.05, 2048,
+            f"无法载入设置：{html.escape(str(exc))}",
+        )
 
 
 def _visible_result(record: dict[str, Any]):
@@ -734,11 +804,21 @@ def _stream_batch(record: dict[str, Any], indexes: list[int], progress):
     rows = _history_rows(record)
     audio, files = _visible_result(record)
     state = _progress_state(record)
+    voice_mode = record.get("model_mode", "clone")
+    if voice_mode not in {"clone", "custom_voice"}:
+        voice_mode = "clone"
     yield audio, files, "正在载入音色…", rows, state, gr.update(choices=history_choices(), value=batch_id), gr.update(visible=True), _retry_button_update(state, running=True)
     try:
-        prompt_items = load_prompt(record["profile_id"], allow_trash=True)
+        with INFERENCE_LOCK:
+            _ensure_model(voice_mode)
+            if voice_mode == "clone":
+                prompt_items = load_prompt(record.get("profile_id"), allow_trash=True)
+            else:
+                prompt_items = None
+                if record.get("speaker") not in CUSTOM_VOICE_LABELS:
+                    raise ValueError("这条记录中的官方音色无效，请从列表重新选择。")
     except Exception as exc:
-        LOG.exception("Could not load voice for history batch %s", batch_id)
+        LOG.exception("Could not load model or voice for history batch %s", batch_id)
         for item in record["lines"]:
             if item["index"] in indexes and item.get("status") != "已完成":
                 item["status"] = "失败"
@@ -746,7 +826,7 @@ def _stream_batch(record: dict[str, Any], indexes: list[int], progress):
         _write_history(record)
         audio, files = _visible_result(record)
         state = _progress_state(record)
-        yield audio, files, f"音色载入失败：{html.escape(str(exc))}", _history_rows(record), state, gr.update(choices=history_choices(), value=batch_id), gr.update(visible=False), _retry_button_update(state)
+        yield audio, files, f"模型或音色载入失败：{html.escape(str(exc))}", _history_rows(record), state, gr.update(choices=history_choices(), value=batch_id), gr.update(visible=False), _retry_button_update(state)
         return
 
     params = record["params"]
@@ -775,10 +855,18 @@ def _stream_batch(record: dict[str, Any], indexes: list[int], progress):
         yield *_visible_result(record), f"正在合成第 {line_index}/{len(record['lines'])} 段…", _history_rows(record), state, gr.update(choices=history_choices(), value=batch_id), gr.update(visible=True), _retry_button_update(state, running=True)
         try:
             with INFERENCE_LOCK:
-                waveforms, sample_rate = MODEL.generate_voice_clone(
-                    text=line["text"], language=params.get("language") or "Auto",
-                    voice_clone_prompt=prompt_items, **kwargs,
-                )
+                _ensure_model(voice_mode)
+                if voice_mode == "clone":
+                    waveforms, sample_rate = MODEL.generate_voice_clone(
+                        text=line["text"], language=params.get("language") or "Auto",
+                        voice_clone_prompt=prompt_items, **kwargs,
+                    )
+                else:
+                    waveforms, sample_rate = MODEL.generate_custom_voice(
+                        text=line["text"], language=params.get("language") or "Auto",
+                        speaker=record["speaker"], instruct=params.get("instruction") or None,
+                        **kwargs,
+                    )
             output_name = f"{batch_id}_{line_index:02d}.wav"
             output_path = OUTPUT_DIR / output_name
             sf.write(str(output_path), waveforms[0], sample_rate, subtype="PCM_24")
@@ -810,7 +898,8 @@ def _error_generation(message: str):
 
 
 def synthesize(
-    profile_id: str, script: str, language: str, do_sample: bool, temperature: float,
+    voice_mode: str, profile_id: str, custom_voice_speaker: str, custom_voice_instruction: str,
+    script: str, language: str, do_sample: bool, temperature: float,
     top_p: float, top_k: int, repetition_penalty: float, max_new_tokens: int,
     progress=gr.Progress(),
 ):
@@ -824,21 +913,43 @@ def synthesize(
     if any(len(line) > 4000 for line in lines):
         yield from _error_generation("单行文本超过 4,000 字符，请拆成更短的语段。")
         return
-    if not profile_id:
-        yield from _error_generation("请先选择或添加一个音色。")
+    if voice_mode not in {"clone", "custom_voice"}:
+        yield from _error_generation("请选择一种音色模式。")
         return
-    metadata = next((item for item in list_profiles() if item["id"] == profile_id), None)
-    if not metadata:
-        yield from _error_generation("所选音色不存在，请刷新音色列表。")
-        return
+    if voice_mode == "clone":
+        if not profile_id:
+            yield from _error_generation("请先选择或添加一个音色。")
+            return
+        metadata = next((item for item in list_profiles() if item["id"] == profile_id), None)
+        if not metadata:
+            yield from _error_generation("所选音色不存在，请刷新音色列表。")
+            return
+        record_voice = {
+            "profile_id": profile_id,
+            "profile_name": metadata["name"],
+            "profile_mode": metadata.get("mode"),
+        }
+        voice_params: dict[str, Any] = {}
+    else:
+        if custom_voice_speaker not in CUSTOM_VOICE_LABELS:
+            yield from _error_generation("请选择一个官方预制音色。")
+            return
+        record_voice = {
+            "profile_id": None,
+            "profile_name": CUSTOM_VOICE_LABELS[custom_voice_speaker],
+            "profile_mode": None,
+            "speaker": custom_voice_speaker,
+        }
+        voice_params = {"instruction": (custom_voice_instruction or "").strip()}
     record = {
         "schema_version": 1, "id": uuid.uuid4().hex,
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "profile_id": profile_id, "profile_name": metadata["name"], "profile_mode": metadata.get("mode"),
+        "model_mode": voice_mode, **record_voice,
         "params": {
             "language": language or "Auto", "do_sample": bool(do_sample),
             "temperature": float(temperature), "top_p": float(top_p), "top_k": int(top_k),
             "repetition_penalty": float(repetition_penalty), "max_new_tokens": int(max_new_tokens),
+            **voice_params,
         },
         "lines": [{"index": index, "text": text, "status": "待生成", "output_file": None, "error": ""}
                   for index, text in enumerate(lines, start=1)],
@@ -886,45 +997,60 @@ with gr.Blocks(title="Qwen3-TTS") as app:
         with gr.Tab("工作台", id="workbench"):
             with gr.Row(elem_classes=["studio-grid"]):
                 with gr.Column(scale=4, min_width=310, elem_classes=["panel"]):
-                    gr.HTML('<div class="section-title">音色</div><div class="section-note">选择或管理可复用的音色档案。</div>')
-                    profile_guide = gr.HTML(
-                        '<div class="warm-note"><strong>添加第一个音色</strong><br>上传或录制一段清晰的人声，填写逐字稿后保存。</div>',
-                        elem_id="first-use-guide", visible=not initial_profiles,
+                    voice_mode = gr.Radio(
+                        choices=[("音色克隆", "clone"), ("官方预制音色", "custom_voice")],
+                        value="clone", label="音色模式", elem_id="voice-mode",
                     )
-                    voice_radio = gr.Radio(
-                        choices=initial_profiles, value=initial_profile_id, label="选择音色",
-                        elem_id="voice-cards", container=False,
-                    )
-                    profile_status = gr.Markdown("", elem_classes=["status-box"])
-                    profile_preview = gr.Audio(
-                        label="参考音频试听", type="filepath", interactive=False,
-                        autoplay=False, elem_classes=["audio-panel"],
-                    )
-                    with gr.Accordion("管理当前音色", open=False):
-                        rename_name = gr.Textbox(label="音色名称", max_lines=1)
-                        with gr.Row():
-                            rename_button = gr.Button("保存名称", size="sm", variant="secondary")
-                            export_button = gr.Button("导出档案", size="sm", variant="secondary")
-                            trash_button = gr.Button("移入回收站", size="sm", variant="secondary")
-                        export_status = gr.Markdown("", elem_classes=["section-note"])
-                        export_file = gr.File(label="档案 ZIP", interactive=False, visible=False)
-                    with gr.Accordion("回收站", open=False):
-                        trash_dropdown = gr.Dropdown(choices=trash_choices(), label="已移入回收站的音色", value=None)
-                        restore_button = gr.Button("恢复所选音色", size="sm", variant="secondary")
-                    refresh_button = gr.Button("刷新音色列表", size="sm", variant="secondary")
-                    with gr.Accordion("添加音色", open=not initial_profiles):
-                        gr.Markdown("选择一段清晰的单人语音。ICL 需要逐字稿；仅提取音色不需要。", elem_classes=["section-note"])
-                        reference_audio = gr.Audio(
-                            sources=["upload", "microphone"], type="filepath", label="参考音频",
-                            elem_classes=["audio-panel"],
+                    with gr.Group(visible=True) as clone_voice_panel:
+                        gr.HTML('<div class="section-title">参考音频克隆</div><div class="section-note">选择或管理可复用的音色档案。</div>')
+                        profile_guide = gr.HTML(
+                            '<div class="warm-note"><strong>添加第一个音色</strong><br>上传或录制一段清晰的人声，填写逐字稿后保存。</div>',
+                            elem_id="first-use-guide", visible=not initial_profiles,
                         )
-                        clone_mode = gr.Radio(choices=CLONE_MODES, value="icl", label="克隆方式")
-                        reference_text = gr.Textbox(
-                            label="参考音频逐字稿", placeholder="准确写下录音里说的内容。",
-                            lines=3, visible=True,
+                        voice_radio = gr.Radio(
+                            choices=initial_profiles, value=initial_profile_id, label="选择音色",
+                            elem_id="voice-cards", container=False,
                         )
-                        new_profile_name = gr.Textbox(label="新音色名称", placeholder="例如：中文旁白", max_lines=1)
-                        save_profile_button = gr.Button("保存音色", variant="primary")
+                        profile_status = gr.Markdown("", elem_classes=["status-box"])
+                        profile_preview = gr.Audio(
+                            label="参考音频试听", type="filepath", interactive=False,
+                            autoplay=False, elem_classes=["audio-panel"],
+                        )
+                        with gr.Accordion("管理当前音色", open=False):
+                            rename_name = gr.Textbox(label="音色名称", max_lines=1)
+                            with gr.Row():
+                                rename_button = gr.Button("保存名称", size="sm", variant="secondary")
+                                export_button = gr.Button("导出档案", size="sm", variant="secondary")
+                                trash_button = gr.Button("移入回收站", size="sm", variant="secondary")
+                            export_status = gr.Markdown("", elem_classes=["section-note"])
+                            export_file = gr.File(label="档案 ZIP", interactive=False, visible=False)
+                        with gr.Accordion("回收站", open=False):
+                            trash_dropdown = gr.Dropdown(choices=trash_choices(), label="已移入回收站的音色", value=None)
+                            restore_button = gr.Button("恢复所选音色", size="sm", variant="secondary")
+                        refresh_button = gr.Button("刷新音色列表", size="sm", variant="secondary")
+                        with gr.Accordion("添加音色", open=not initial_profiles):
+                            gr.Markdown("选择一段清晰的单人语音。ICL 需要逐字稿；仅提取音色不需要。", elem_classes=["section-note"])
+                            reference_audio = gr.Audio(
+                                sources=["upload", "microphone"], type="filepath", label="参考音频",
+                                elem_classes=["audio-panel"],
+                            )
+                            clone_mode = gr.Radio(choices=CLONE_MODES, value="icl", label="克隆方式")
+                            reference_text = gr.Textbox(
+                                label="参考音频逐字稿", placeholder="准确写下录音里说的内容。",
+                                lines=3, visible=True,
+                            )
+                            new_profile_name = gr.Textbox(label="新音色名称", placeholder="例如：中文旁白", max_lines=1)
+                            save_profile_button = gr.Button("保存音色", variant="primary")
+                    with gr.Group(visible=False) as custom_voice_panel:
+                        gr.HTML('<div class="section-title">官方预制音色</div><div class="section-note">选择内置说话人，并可通过风格指令调整表达方式。</div>')
+                        custom_voice_speaker = gr.Dropdown(
+                            choices=CUSTOM_VOICE_CHOICES, value="Uncle_Fu", label="官方音色",
+                            filterable=False,
+                        )
+                        custom_voice_instruction = gr.Textbox(
+                            label="风格指令", value=DEFAULT_CUSTOM_VOICE_INSTRUCTION,
+                            placeholder="例如：语速舒缓，情绪克制，像纪录片旁白。", lines=4,
+                        )
 
                 with gr.Column(scale=7, min_width=430, elem_classes=["panel"]):
                     gr.HTML('<div class="section-title">语音合成</div><div class="section-note">逐行生成 · 每批最多 8 段。</div>')
@@ -979,6 +1105,10 @@ with gr.Blocks(title="Qwen3-TTS") as app:
                 load_settings_button = gr.Button("载入这批设置到工作台", variant="secondary")
                 history_load_status = gr.Markdown("", elem_classes=["section-note"])
 
+    voice_mode.change(
+        fn=lambda value: (gr.update(visible=(value == "clone")), gr.update(visible=(value == "custom_voice"))),
+        inputs=[voice_mode], outputs=[clone_voice_panel, custom_voice_panel], queue=False,
+    )
     clone_mode.change(lambda value: gr.update(visible=(value == "icl")), inputs=[clone_mode], outputs=[reference_text], queue=False)
     sampling_preset.change(
         fn=apply_sampling_preset, inputs=[sampling_preset],
@@ -1013,7 +1143,8 @@ with gr.Blocks(title="Qwen3-TTS") as app:
     )
     generate_button.click(
         fn=synthesize,
-        inputs=[voice_radio, script_box, language_dropdown, do_sample, temperature, top_p, top_k, repetition_penalty, max_new_tokens],
+        inputs=[voice_mode, voice_radio, custom_voice_speaker, custom_voice_instruction,
+                script_box, language_dropdown, do_sample, temperature, top_p, top_k, repetition_penalty, max_new_tokens],
         outputs=_outputs_for_generation(),
     )
     retry_button.click(fn=retry_incomplete, inputs=[retry_state], outputs=_outputs_for_generation())
@@ -1022,7 +1153,9 @@ with gr.Blocks(title="Qwen3-TTS") as app:
     history_refresh.click(fn=lambda: gr.update(choices=history_choices()), inputs=[], outputs=[history_picker], queue=False)
     load_settings_button.click(
         fn=load_history_settings, inputs=[history_picker],
-        outputs=[voice_radio, script_box, language_dropdown, do_sample, temperature, top_p, top_k, repetition_penalty, max_new_tokens, history_load_status],
+        outputs=[voice_mode, clone_voice_panel, custom_voice_panel, voice_radio, custom_voice_speaker,
+                 custom_voice_instruction, script_box, language_dropdown, do_sample, temperature, top_p,
+                 top_k, repetition_penalty, max_new_tokens, history_load_status],
     )
     app.load(
         fn=initialize_page,
