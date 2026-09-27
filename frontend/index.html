@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#eee6dc">
+  <title>Qwen3-TTS</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Qwen3-TTS 首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>Qwen3-TTS</span>
+    </a>
+    <nav class="primary-nav" aria-label="主导航">
+      <button class="nav-item active" type="button" data-view="creator" aria-current="page">创作</button>
+      <button class="nav-item" type="button" data-view="voices">音色</button>
+      <button class="nav-item" type="button" data-view="history">记录</button>
+    </nav>
+    <div class="topbar-actions">
+      <span class="model-chip" id="model-status"><span class="status-dot"></span><span>模型就绪</span></span>
+      <button class="icon-button" id="theme-toggle" type="button" aria-label="切换深色模式" title="切换深色模式">
+        <svg class="icon icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.1 15.4A8.5 8.5 0 0 1 8.6 3.9 8.7 8.7 0 1 0 20.1 15.4Z"/></svg>
+        <svg class="icon icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <section class="view active" id="view-creator" aria-labelledby="creator-title">
+      <div class="page-heading">
+        <div><h1 id="creator-title">创作</h1></div>
+        <button class="button button-soft" type="button" data-go-view="voices">管理音色 <span aria-hidden="true">↗</span></button>
+      </div>
+      <div class="workspace-grid">
+        <aside class="clay-panel voice-panel">
+          <div class="panel-heading">
+            <span class="step-badge">01</span>
+            <div><h2>选择声音</h2><span class="panel-caption">声音来源</span></div>
+          </div>
+          <div class="mode-switch" role="group" aria-label="声音来源">
+            <button type="button" class="mode-choice active" data-mode="clone">我的音色</button>
+            <button type="button" class="mode-choice" data-mode="custom_voice">官方音色</button>
+          </div>
+          <div class="form-stack" id="clone-controls">
+            <label class="field-label" for="profile-picker">音色档案</label>
+            <select id="profile-picker" class="clay-input"></select>
+            <p class="inline-hint" id="no-profile-hint" hidden>还没有音色档案。<button class="text-button" type="button" data-go-view="voices">添加音色</button></p>
+            <audio class="voice-sample" id="profile-preview" controls hidden></audio>
+          </div>
+          <div class="form-stack" id="custom-controls" hidden>
+            <span class="field-label">预制音色</span>
+            <div class="speaker-grid" id="speaker-grid"></div>
+            <label class="field-label" for="global-instruction">风格指令</label>
+            <textarea class="clay-input instruction-input" id="global-instruction" rows="3"></textarea>
+          </div>
+          <div class="form-stack language-stack">
+            <label class="field-label" for="global-language">语言</label>
+            <select id="global-language" class="clay-input"></select>
+          </div>
+          <button class="button button-soft full-button" id="open-voice-design" type="button">设计一个新音色</button>
+          <div class="voice-note" id="model-note"></div>
+        </aside>
+
+        <section class="clay-panel compose-panel">
+          <div class="panel-heading">
+            <span class="step-badge">02</span>
+            <div><h2>写文案</h2><span class="panel-caption">换行即分段</span></div>
+            <span class="count-pill" id="script-count">0 段 · 0 字</span>
+          </div>
+          <label class="visually-hidden" for="script-input">口播文案</label>
+          <textarea id="script-input" class="clay-input script-input" placeholder="粘贴口播文案，每行生成一段" rows="9" maxlength="32000"></textarea>
+          <div class="script-toolbar">
+            <span id="script-validation" class="inline-hint">最多 8 段，每段不超过 4,000 字</span>
+            <button id="clear-script" type="button" class="text-button">清空</button>
+          </div>
+
+          <details class="segment-settings">
+            <summary><span>逐段设置</span><span class="summary-meta" id="segment-setting-count">使用整体设置</span></summary>
+            <div id="segment-settings-list" class="segment-settings-list"></div>
+          </details>
+
+          <details class="advanced-settings">
+            <summary><span>高级参数</span><span class="summary-meta">默认值</span></summary>
+            <div class="advanced-grid">
+              <label class="toggle-row"><span>生成变化</span><input id="do-sample" type="checkbox" checked><span class="toggle-switch"></span></label>
+              <label class="field"><span>变化幅度 <output id="temperature-value">0.90</output></span><input id="temperature" type="range" min="0.1" max="1.5" step="0.05" value="0.9"></label>
+              <label class="field"><span>采样范围 <output id="top-p-value">1.00</output></span><input id="top-p" type="range" min="0.1" max="1" step="0.05" value="1"></label>
+              <label class="field"><span>候选数量 <output id="top-k-value">50</output></span><input id="top-k" type="range" min="1" max="100" step="1" value="50"></label>
+              <label class="field"><span>重复抑制 <output id="repetition-value">1.05</output></span><input id="repetition" type="range" min="1" max="1.5" step="0.01" value="1.05"></label>
+              <label class="field"><span>单段长度上限 <output id="tokens-value">2048</output></span><input id="max-tokens" type="range" min="128" max="4096" step="128" value="2048"></label>
+              <details class="subtalker-settings">
+                <summary><span>声音细节</span><span class="summary-meta">可选</span></summary>
+                <div class="advanced-grid subtalker-grid">
+                  <label class="toggle-row"><span>声音采样变化</span><input id="subtalker-sample" type="checkbox" checked><span class="toggle-switch"></span></label>
+                  <label class="field"><span>细节变化幅度 <output id="sub-temperature-value">0.90</output></span><input id="sub-temperature" type="range" min="0.1" max="1.5" step="0.05" value="0.9"></label>
+                  <label class="field"><span>细节采样范围 <output id="sub-top-p-value">1.00</output></span><input id="sub-top-p" type="range" min="0.1" max="1" step="0.05" value="1"></label>
+                  <label class="field"><span>细节候选数量 <output id="sub-top-k-value">50</output></span><input id="sub-top-k" type="range" min="1" max="100" step="1" value="50"></label>
+                </div>
+              </details>
+            </div>
+          </details>
+
+          <div class="generate-row">
+            <div class="generate-copy"><span class="step-badge">03</span><div><h2>生成口播</h2><span class="panel-caption">逐段生成并保存为 WAV</span></div></div>
+            <div class="generate-actions">
+              <button class="button button-soft" id="stop-job" type="button" hidden>暂停</button>
+              <button class="button button-primary" id="generate-button" type="button">生成</button>
+            </div>
+          </div>
+          <div class="validation-message" id="generation-message" role="status" aria-live="polite"></div>
+          <div id="active-generation" class="generation-result" aria-live="polite"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="view" id="view-voices" aria-labelledby="voices-title">
+      <div class="page-heading">
+        <div><h1 id="voices-title">音色</h1></div>
+      </div>
+      <div class="voice-tools-grid">
+        <section class="clay-panel tool-panel">
+          <div class="panel-heading"><span class="step-badge">01</span><div><h2>设计音色</h2><span class="panel-caption">描述你想要的声音</span></div></div>
+          <form id="design-form" class="form-stack">
+            <label class="field-label" for="design-instruction">音色描述</label>
+            <textarea id="design-instruction" class="clay-input" rows="4" maxlength="1200" required placeholder="例如：低沉、醇厚的纪录片男声，语速平稳，吐字清晰"></textarea>
+            <label class="field-label" for="design-text">试听文案</label>
+            <textarea id="design-text" class="clay-input" rows="3" maxlength="1000" required placeholder="输入用于试听和保存音色的文案"></textarea>
+            <label class="field-label" for="design-language">语言</label>
+            <select id="design-language" class="clay-input"></select>
+            <button class="button button-primary full-button" id="design-button" type="submit">生成试听</button>
+          </form>
+          <div class="design-preview" id="design-preview" hidden></div>
+        </section>
+
+        <section class="clay-panel tool-panel">
+          <div class="panel-heading"><span class="step-badge">02</span><div><h2>添加音色</h2><span class="panel-caption">上传或录制参考音频</span></div></div>
+          <form id="profile-form" class="form-stack">
+            <label class="field-label" for="profile-name">音色名称</label>
+            <input id="profile-name" class="clay-input" maxlength="36" required placeholder="例如：广告男声">
+            <label class="field-label" for="profile-audio-file">参考音频</label>
+            <input id="profile-audio-file" class="file-input" type="file" accept="audio/*,.wav,.flac,.mp3,.m4a,.ogg,.aiff,.aif,.webm">
+            <div class="record-controls">
+              <button class="button button-soft" id="record-start" type="button">开始录音</button>
+              <button class="button button-soft" id="record-stop" type="button" hidden>结束录音</button>
+              <span id="record-status" class="inline-hint"></span>
+            </div>
+            <div class="record-preview" id="record-preview" hidden></div>
+            <label class="field-label" for="clone-mode">参考方式</label>
+            <select id="clone-mode" class="clay-input">
+              <option value="icl">录音与原文</option>
+              <option value="x_vector">仅参考声音</option>
+            </select>
+            <div id="transcript-field">
+              <label class="field-label" for="reference-text">录音原文</label>
+              <textarea id="reference-text" class="clay-input" rows="3" placeholder="填写参考音频中的原文"></textarea>
+            </div>
+            <button class="button button-primary full-button" type="submit">保存音色</button>
+          </form>
+        </section>
+      </div>
+
+      <section class="library-section">
+        <div class="section-heading"><h2>我的音色</h2><span id="profile-count" class="count-pill">0 个</span></div>
+        <div class="profile-grid" id="profile-list"></div>
+        <div class="empty-card" id="profile-empty" hidden>还没有音色</div>
+      </section>
+      <details class="trash-section">
+        <summary><span>回收站</span><span class="summary-meta" id="trash-count">0 个</span></summary>
+        <div class="profile-grid" id="trash-list"></div>
+        <div class="inline-hint" id="trash-empty">回收站为空</div>
+      </details>
+    </section>
+
+    <section class="view" id="view-history" aria-labelledby="history-title">
+      <div class="page-heading">
+        <div><h1 id="history-title">记录</h1></div>
+        <button class="button button-soft" id="refresh-history" type="button">刷新</button>
+      </div>
+      <div class="history-list" id="history-list"></div>
+      <div class="empty-card" id="history-empty" hidden>还没有生成记录</div>
+    </section>
+  </main>
+  <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

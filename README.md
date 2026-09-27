@@ -1,82 +1,94 @@
 # Qwen3-TTS 本地语音工作台
 
-一个面向 Apple Silicon Mac 的本地网页工作台，把 Qwen3-TTS 的参考音频克隆和官方预制音色合在同一个界面中。模型在本机运行，网页默认只监听 `127.0.0.1`。
-
-模型权重、音色参考音频、生成语音和历史记录均不包含在本仓库中。
+一个面向 Apple Silicon Mac 的本地语音创作网页，提供音色克隆、官方预制音色和文字设计音色。推理由本机运行，网页只绑定 `127.0.0.1`；音色档案、生成记录和音频也保存在本机。
 
 ## 功能
 
-- **音色克隆**：建立和管理音色档案，支持 ICL（参考音频加逐字稿）和仅提取音色两种方式
-- **官方预制音色**：选择 Vivian、Serena、Uncle Fu、Dylan、Eric、Ryan、Aiden、Ono Anna 或 Sohee
-- **风格指令**：为官方预制音色提供语气、语速和表达方式提示
-- **逐段生成**：按行合成 WAV，查看进度，停止后继续或重试未完成段落
-- **生成记录**：试听和下载结果，查看文本与设置，并将设置载回工作台
-- **本地保存**：音色档案、生成音频和历史记录保存在指定的数据目录
-- **单模型驻留**：克隆和预制音色模型按使用模式轮流加载，避免同时占用内存
+- **音色克隆**：用参考录音和对应原文（ICL），或只用参考录音（x-vector）创建音色。
+- **VoiceDesign**：用文字描述声音，生成试听，并保存为可复用的音色档案。
+- **CustomVoice**：使用 Qwen3-TTS 的 9 个官方预制音色，并添加风格指令。
+- **分段口播**：按换行分段；最多 8 段，每段最多 4,000 字；可逐段选择声音和语言。
+- **生成参数**：调整主采样、声音细节采样和单段长度上限。
+- **任务控制**：查看逐段状态，暂停后继续未完成段，或重试失败段。
+- **音频与记录**：试听、下载单段或整批 WAV；回看文案与参数。
+- **音色管理**：上传或录制参考音频、重命名、导出、移入回收站和恢复音色。
+- **界面**：中文、黏土拟物风格、浅色和深色模式，支持桌面与手机屏幕。
+
+音频按段生成，单段完成后即可试听和下载；此版本不提供实时流式播放。
 
 ## 环境要求
 
 - Apple Silicon Mac
 - Python 3.12
-- 支持 MPS 的 PyTorch
-- 本地 Qwen3-TTS Base 模型；使用官方预制音色时还需 CustomVoice 模型
+- 按 PyTorch 官方安装说明准备支持 MPS 的 PyTorch
+- Base 模型权重（必需）；CustomVoice 和 VoiceDesign 权重按需安装
 
 ## 安装与启动
 
-先按 PyTorch 官方说明准备适用于当前 macOS 的 PyTorch，然后安装项目依赖：
-
 ```bash
+git clone https://github.com/ibka512/qwen3-tts-web-studio.git
+cd qwen3-tts-web-studio
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
 ```
 
-默认情况下，程序会在源码目录下查找模型并保存运行数据。建议把权重与运行数据放到独立目录，再通过 `QWEN_TTS_ROOT` 指定：
+先按 [PyTorch 官方说明](https://pytorch.org/get-started/locally/)安装适用于当前 macOS 的 PyTorch，再安装项目依赖并启动：
 
 ```bash
+python -m pip install -r requirements.txt
 export QWEN_TTS_ROOT="$HOME/qwen3-tts-data"
 python web_app.py
 ```
 
-默认目录结构如下：
+打开 <http://127.0.0.1:8000/>。默认端口为 `8000`，可用 `QWEN_TTS_PORT` 修改。首次启动会载入 Base 模型；首次切换到其他声音功能时会载入对应模型。为控制统一内存占用，同一时间只在内存中保留一个模型。
 
-```text
-qwen3-tts-data/
-├── models/
-│   ├── Qwen3-TTS-12Hz-1.7B-Base/
-│   └── Qwen3-TTS-12Hz-1.7B-CustomVoice/
-├── voices/
-├── outputs/
-├── history/
-├── exports/
-└── logs/
-```
+前端使用原生 HTML、CSS 和 JavaScript，无需安装 Node.js 或运行前端构建命令。
 
-Base 模型在启动时载入。CustomVoice 模型在首次使用“官方预制音色”模式时载入；首次载入或切换模型需要等待一段时间。只使用音色克隆时可以不准备 CustomVoice 模型。
+## 模型文件
 
-如需自定义位置，可设置以下环境变量：
+下载完整模型仓库，并将文件放入下面对应的目录。每个模型目录中应直接包含 `model.safetensors` 和 `speech_tokenizer/` 子目录。
 
-| 变量 | 用途 | 默认位置 |
+| 功能 | 官方模型 | 本地目录 |
 | --- | --- | --- |
-| `QWEN_TTS_ROOT` | 音色档案、输出、历史记录、日志与默认模型目录 | 源码目录 |
-| `QWEN_TTS_MODEL_DIR` | Base 模型目录 | `$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-Base` |
-| `QWEN_TTS_CUSTOM_MODEL_DIR` | CustomVoice 模型目录 | `$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-CustomVoice` |
-| `QWEN_TTS_PORT` | 本地网页端口 | `8000` |
+| 音色克隆（必需） | [Qwen3-TTS-12Hz-1.7B-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) | `$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-Base` |
+| 官方预制音色 | [Qwen3-TTS-12Hz-1.7B-CustomVoice](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice) | `$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-CustomVoice` |
+| 文字设计音色 | [Qwen3-TTS-12Hz-1.7B-VoiceDesign](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign) | `$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-VoiceDesign` |
 
-模型使用本地文件载入。准备好依赖和权重后，运行：
+可以从模型页面下载，也可以安装 Hugging Face Hub 命令行工具后使用 `hf download`：
 
 ```bash
-python web_app.py
+python -m pip install -U huggingface_hub
+hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --local-dir "$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-Base"
+hf download Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+  --local-dir "$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+hf download Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --local-dir "$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 ```
 
-然后访问 <http://127.0.0.1:8000/>。
+只使用某项功能时，可只下载 Base 和该功能所需的模型。Base 权重缺失时工作台无法启动；未安装 CustomVoice 或 VoiceDesign 权重时，对应功能不可用。
 
-## 本地数据与隐私
+## 文件位置与配置
 
-- `voices/`：音色档案、参考音频和回收站
-- `outputs/`：生成的 WAV 文件
-- `history/`：每批文本、参数和逐段生成状态
-- `exports/`：导出的音色档案 ZIP
-- `logs/`：本机运行日志
+默认情况下，模型和运行数据都放在源码目录下。设置 `QWEN_TTS_ROOT` 后，模型、运行缓存和创作数据改存到指定目录：
 
-这些运行数据目录及模型权重由 `.gitignore` 排除。请勿将私人参考音频、生成文本或生成语音提交到仓库。
+```text
+$QWEN_TTS_ROOT/
+├── models/       # 模型权重
+├── voices/       # 音色档案和参考录音
+├── outputs/      # 生成的 WAV
+├── history/      # 文案、设置和生成状态
+├── exports/      # 导出的音色档案
+├── logs/         # 运行日志
+└── cache/        # 临时文件和运行缓存
+```
+
+| 环境变量 | 用途 | 默认值 |
+| --- | --- | --- |
+| `QWEN_TTS_ROOT` | 模型、音色、输出、历史、导出和缓存的根目录 | 源码目录 |
+| `QWEN_TTS_MODEL_DIR` | Base 模型目录 | `$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-Base` |
+| `QWEN_TTS_CUSTOM_MODEL_DIR` | CustomVoice 模型目录 | `$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-CustomVoice` |
+| `QWEN_TTS_VOICEDESIGN_MODEL_DIR` | VoiceDesign 模型目录 | `$QWEN_TTS_ROOT/models/Qwen3-TTS-12Hz-1.7B-VoiceDesign` |
+| `QWEN_TTS_PORT` | 本地网页端口 | `8000` |
+
+模型权重、参考录音、生成文案、音色档案和生成音频不包含在本仓库中。不要将私人素材提交到公开仓库。

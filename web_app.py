@@ -20,11 +20,15 @@ import torch
 from qwen_tts import Qwen3TTSModel
 
 ROOT = Path(os.environ.get("QWEN_TTS_ROOT", Path(__file__).resolve().parent)).expanduser().resolve()
+os.environ.setdefault("TMPDIR", str(ROOT / "cache" / "tmp"))
 MODEL_DIR = Path(
     os.environ.get("QWEN_TTS_MODEL_DIR", ROOT / "models" / "Qwen3-TTS-12Hz-1.7B-Base")
 ).expanduser().resolve()
 CUSTOMVOICE_MODEL_DIR = Path(
     os.environ.get("QWEN_TTS_CUSTOM_MODEL_DIR", ROOT / "models" / "Qwen3-TTS-12Hz-1.7B-CustomVoice")
+).expanduser().resolve()
+VOICE_DESIGN_MODEL_DIR = Path(
+    os.environ.get("QWEN_TTS_VOICEDESIGN_MODEL_DIR", ROOT / "models" / "Qwen3-TTS-12Hz-1.7B-VoiceDesign")
 ).expanduser().resolve()
 VOICE_DIR = ROOT / "voices"
 OUTPUT_DIR = ROOT / "outputs"
@@ -32,7 +36,7 @@ LOG_DIR = ROOT / "logs"
 HISTORY_DIR = ROOT / "history"
 EXPORT_DIR = ROOT / "exports"
 TRASH_DIR = VOICE_DIR / ".trash"
-for directory in (VOICE_DIR, OUTPUT_DIR, LOG_DIR, HISTORY_DIR, EXPORT_DIR, TRASH_DIR, ROOT / "cache" / "gradio"):
+for directory in (VOICE_DIR, OUTPUT_DIR, LOG_DIR, HISTORY_DIR, EXPORT_DIR, TRASH_DIR, ROOT / "cache" / "gradio", ROOT / "cache" / "tmp"):
     directory.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -56,8 +60,8 @@ LANGUAGES = [
     ("意大利语", "Italian"),
 ]
 CLONE_MODES = [
-    ("音频 + 逐字稿 · 模仿更完整", "icl"),
-    ("仅提取音色 · 不需要逐字稿", "x_vector"),
+    ("录音与原文", "icl"),
+    ("仅参考声音", "x_vector"),
 ]
 CUSTOM_VOICE_CHOICES = [
     ("Uncle Fu · 男声", "Uncle_Fu"),
@@ -85,12 +89,12 @@ MODEL_KIND: str | None = None
 def _ensure_model(kind: str):
     """Load one local checkpoint at a time to keep Apple Silicon memory use bounded."""
     global MODEL, MODEL_KIND
-    if kind not in {"clone", "custom_voice"}:
+    if kind not in {"clone", "custom_voice", "voice_design"}:
         raise ValueError("不支持的音色模式。")
     if MODEL is not None and MODEL_KIND == kind:
         return MODEL
 
-    model_dir = MODEL_DIR if kind == "clone" else CUSTOMVOICE_MODEL_DIR
+    model_dir = {"clone": MODEL_DIR, "custom_voice": CUSTOMVOICE_MODEL_DIR, "voice_design": VOICE_DESIGN_MODEL_DIR}[kind]
     if not model_dir.is_dir() or not (model_dir / "model.safetensors").is_file():
         raise FileNotFoundError(f"模型文件没有找到：{model_dir}")
 
@@ -109,7 +113,7 @@ def _ensure_model(kind: str):
         except Exception:
             pass
 
-    label = "Base" if kind == "clone" else "CustomVoice"
+    label = {"clone": "Base", "custom_voice": "CustomVoice", "voice_design": "VoiceDesign"}[kind]
     LOG.info("Loading Qwen3-TTS %s from %s", label, model_dir)
     MODEL = Qwen3TTSModel.from_pretrained(
         str(model_dir),
@@ -124,226 +128,6 @@ def _ensure_model(kind: str):
 
 
 _ensure_model("clone")
-
-CSS = r"""
-:root {
-  color-scheme: light dark;
-  --canvas: light-dark(#f2f3ed, #111713);
-  --surface: light-dark(#fffefa, #1b231e);
-  --surface-soft: light-dark(#f7f8f3, #222c25);
-  --ink: light-dark(#202923, #e7ede8);
-  --muted: light-dark(#66736a, #b1beb4);
-  --subtle: light-dark(#87938a, #91a095);
-  --line: light-dark(#dfe4dc, #354239);
-  --line-strong: light-dark(#cbd5cc, #46574a);
-  --forest: light-dark(#315944, #9abca1);
-  --forest-hover: light-dark(#264936, #afcbb4);
-  --forest-soft: light-dark(#e8f0e9, #293a2e);
-  --forest-ink: light-dark(#2e5a40, #c4d9c8);
-  --copper: light-dark(#b96849, #e1a080);
-  --copper-soft: light-dark(#f5ebe5, #392d27);
-  --warm-ink: light-dark(#754a35, #ebc2a8);
-  --primary-ink: light-dark(#fffefa, #172119);
-  --focus: light-dark(rgba(185, 104, 73, .55), rgba(225, 160, 128, .68));
-  --shadow-card: 0 6px 24px light-dark(rgba(31, 48, 36, .045), rgba(0, 0, 0, .18));
-  --shadow-button: 0 7px 16px light-dark(rgba(39, 75, 53, .15), rgba(0, 0, 0, .22));
-}
-html, body, .gradio-container {
-  color-scheme: inherit;
-  background: var(--canvas) !important;
-  color: var(--ink) !important;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif !important;
-}
-.gradio-container {
-  --background-fill-primary: var(--canvas) !important;
-  --background-fill-secondary: var(--surface-soft) !important;
-  --block-background-fill: var(--surface) !important;
-  --block-label-background-fill: var(--surface) !important;
-  --input-background-fill: var(--surface) !important;
-  --body-text-color: var(--ink) !important;
-  --block-label-text-color: var(--ink) !important;
-  --block-title-text-color: var(--ink) !important;
-  --input-text-color: var(--ink) !important;
-  --input-placeholder-color: var(--subtle) !important;
-  --input-border-color: var(--line-strong) !important;
-  --block-border-color: var(--line) !important;
-  --border-color-primary: var(--line) !important;
-  --button-secondary-background-fill: var(--surface-soft) !important;
-  --button-secondary-text-color: var(--forest-ink) !important;
-  --button-secondary-border-color: var(--line) !important;
-  --button-primary-background-fill: var(--forest) !important;
-  --button-primary-text-color: var(--primary-ink) !important;
-  --checkbox-background-color: var(--surface) !important;
-  width: min(100%, 1560px) !important;
-  max-width: 1560px !important;
-  padding: 24px clamp(16px, 3.2vw, 48px) 40px !important;
-  margin: 0 auto !important;
-}
-footer, .built-with, .gradio-container > .main > .wrap > .contain > .footer { display: none !important; }
-#studio-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  min-height: 94px;
-  padding: 19px 24px;
-  margin-bottom: 16px;
-  border: 1px solid var(--line);
-  border-radius: 17px;
-  color: var(--ink);
-  background: var(--surface);
-  box-shadow: var(--shadow-card);
-}
-.header-copy { min-width: 0; }
-.header-title {
-  margin: 0;
-  color: var(--ink);
-  font-size: clamp(22px, 3vw, 29px);
-  font-weight: 700;
-  line-height: 1.15;
-  letter-spacing: -.04em;
-  white-space: nowrap;
-}
-.header-side { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
-.local-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 11px;
-  border: 1px solid var(--line);
-  border-radius: 99px;
-  color: var(--forest-ink);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  background: var(--forest-soft);
-}
-.studio-grid { align-items: flex-start !important; gap: 16px !important; }
-.panel {
-  padding: 22px !important;
-  border: 1px solid var(--line) !important;
-  border-radius: 17px !important;
-  background: var(--surface) !important;
-  box-shadow: var(--shadow-card) !important;
-}
-.section-title {
-  margin: 0 0 5px;
-  color: var(--ink);
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -.025em;
-}
-.section-note { color: var(--muted); font-size: 12px; line-height: 1.55; }
-.soft-note {
-  padding: 11px 12px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--forest-soft);
-  color: var(--forest-ink);
-  font-size: 12px;
-  line-height: 1.55;
-}
-.warm-note {
-  padding: 11px 12px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--copper-soft);
-  color: var(--warm-ink);
-  font-size: 12px;
-  line-height: 1.55;
-}
-.status-box {
-  min-height: 42px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--surface-soft);
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-#generate-button {
-  min-height: 50px !important;
-  border: 0 !important;
-  border-radius: 12px !important;
-  background: var(--forest) !important;
-  color: var(--primary-ink) !important;
-  font-weight: 700 !important;
-  box-shadow: var(--shadow-button) !important;
-  transition: transform .16s ease, background .16s ease, box-shadow .16s ease !important;
-}
-#generate-button:hover {
-  background: var(--forest-hover) !important;
-  transform: translateY(-1px);
-}
-#generate-button:active { transform: translateY(0); }
-button.primary, .primary { border-radius: 11px !important; }
-button.secondary, .secondary { border-radius: 10px !important; }
-button, [role="button"] {
-  cursor: pointer !important;
-  transition: border-color .18s ease, background .18s ease, color .18s ease;
-}
-button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex="0"]:focus-visible {
-  outline: 3px solid var(--focus) !important;
-  outline-offset: 2px !important;
-}
-input, textarea { border-radius: 10px !important; }
-textarea { line-height: 1.65 !important; }
-label, .label { color: var(--ink) !important; font-weight: 600 !important; }
-.gr-accordion {
-  border: 1px solid var(--line) !important;
-  border-radius: 12px !important;
-  background: var(--surface-soft) !important;
-}
-.accordion { border-radius: 12px !important; }
-.audio-panel { border: 1px solid var(--line) !important; border-radius: 12px !important; overflow: hidden; }
-.output-panel { padding-top: 8px; }
-.output-title { margin-top: 4px; }
-#speech-options { gap: 10px !important; }
-#voice-cards fieldset { display: grid !important; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 9px !important; }
-#voice-cards fieldset > label {
-  min-height: 48px !important;
-  margin: 0 !important;
-  padding: 12px 13px !important;
-  border: 1px solid var(--line) !important;
-  border-radius: 12px !important;
-  background: var(--surface-soft) !important;
-  transition: border-color .16s ease, background .16s ease, transform .16s ease;
-}
-#voice-cards fieldset > label:hover { border-color: var(--line-strong) !important; transform: translateY(-1px); }
-#voice-cards fieldset > label:has(input:checked) { border-color: var(--forest) !important; background: var(--forest-soft) !important; }
-#first-use-guide { margin: 11px 0 13px; }
-#line-table, #history-table { border-radius: 11px !important; overflow: hidden; }
-#stop-button { min-height: 50px !important; border-radius: 12px !important; }
-@media (max-width: 980px) {
-  .studio-grid { flex-direction: column !important; }
-  .studio-grid > * { width: 100% !important; min-width: 0 !important; }
-}
-@media (max-width: 640px) {
-  .gradio-container { padding: 12px 12px 26px !important; }
-  #studio-header { min-height: 72px; padding: 14px 15px; border-radius: 15px; gap: 10px; }
-  .header-title { font-size: 22px; }
-  .local-pill { padding: 7px 8px; font-size: 10px; }
-  .panel { padding: 17px !important; border-radius: 15px !important; }
-  #speech-options { flex-direction: column !important; align-items: stretch !important; gap: 8px !important; }
-  #speech-options > * { width: 100% !important; min-width: 0 !important; flex: 1 1 100% !important; }
-}
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
-}
-"""
-
-HEADER_HTML = """
-<div id="studio-header">
-  <div class="header-copy">
-    <h1 class="header-title">Qwen3-TTS</h1>
-  </div>
-  <div class="header-side">
-    <span class="local-pill">双模式 · 1.7B</span>
-  </div>
-</div>
-"""
-
 
 def _read_profile(profile_dir: Path) -> dict[str, Any] | None:
     try:
@@ -365,22 +149,19 @@ def _read_profile(profile_dir: Path) -> dict[str, Any] | None:
 
 
 def list_profiles() -> list[dict[str, Any]]:
-    found = [metadata for folder in VOICE_DIR.iterdir() if folder.is_dir() and folder.name != ".trash"
+    found = [metadata for folder in VOICE_DIR.iterdir() if folder.is_dir() and folder.name != ".trash" and (folder / "profile.json").is_file()
              if (metadata := _read_profile(folder))]
     return sorted(found, key=lambda item: item.get("created_at", ""), reverse=True)
 
 
 def list_trashed_profiles() -> list[dict[str, Any]]:
-    found = [metadata for folder in TRASH_DIR.iterdir() if folder.is_dir()
+    found = [metadata for folder in TRASH_DIR.iterdir() if folder.is_dir() and (folder / "profile.json").is_file()
              if (metadata := _read_profile(folder))]
     return sorted(found, key=lambda item: item.get("trashed_at", ""), reverse=True)
 
 
 def profile_choices() -> list[tuple[str, str]]:
-    return [
-        (f"{item['name']} · {'ICL' if item.get('mode') == 'icl' else '音色向量'}", item["id"])
-        for item in list_profiles()
-    ]
+    return [(item["name"], item["id"]) for item in list_profiles()]
 
 
 def _profile_name_taken(name: str, profile_id: str | None = None) -> bool:
@@ -440,16 +221,16 @@ def _profile_audio_path(profile_id: str | None) -> str | None:
 
 def load_profile_status(profile_id: str | None):
     if not profile_id:
-        return "音色库为空。添加一段参考音频后，就可以开始生成。", None, ""
+        return "", None, ""
     try:
         load_prompt(profile_id)
         metadata = next((item for item in list_profiles() if item["id"] == profile_id), None)
         name = metadata["name"] if metadata else "已选音色"
-        mode = "音频 + 逐字稿" if metadata and metadata.get("mode") == "icl" else "仅提取音色"
+        mode = "录音与原文" if metadata and metadata.get("mode") == "icl" else "仅参考声音"
         return f"**{html.escape(name)} 已就绪** · {mode}", _profile_audio_path(profile_id), name
-    except Exception as exc:
+    except Exception:
         LOG.exception("Failed to load voice profile %s", profile_id)
-        return f"**音色载入失败：** {html.escape(str(exc))}", _profile_audio_path(profile_id), ""
+        return "这条音色暂时无法使用，请刷新列表或重新选择。", _profile_audio_path(profile_id), ""
 
 
 def _profile_refresh_payload(profile_id: str | None):
@@ -489,7 +270,7 @@ def save_voice_profile(name: str, audio_file: str, ref_text: str, mode: str, pro
         return (gr.update(choices=profile_choices()), "请上传或录制一段参考音频。", None, "", gr.update(visible=not list_profiles()), gr.update(choices=trash_choices()))
     transcript = (ref_text or "").strip()
     if mode == "icl" and not transcript:
-        return (gr.update(choices=profile_choices()), "ICL 模式需要填写参考音频的逐字稿。", None, "", gr.update(visible=not list_profiles()), gr.update(choices=trash_choices()))
+        return (gr.update(choices=profile_choices()), "选择“录音与原文”时，请填写录音内容。", None, "", gr.update(visible=not list_profiles()), gr.update(choices=trash_choices()))
 
     source = Path(audio_file)
     suffix = source.suffix.lower()
@@ -525,11 +306,11 @@ def save_voice_profile(name: str, audio_file: str, ref_text: str, mode: str, pro
             f"**{html.escape(clean_name)} 已保存并载入。**",
             str(saved_audio), clean_name, gr.update(visible=False), gr.update(choices=trash_choices()),
         )
-    except Exception as exc:
+    except Exception:
         LOG.exception("Could not create voice profile %s", clean_name)
         PROMPT_CACHE.pop(profile_id, None)
         shutil.rmtree(profile_dir, ignore_errors=True)
-        return (gr.update(choices=profile_choices()), f"音色保存失败：{html.escape(str(exc))}", None, "", gr.update(visible=not list_profiles()), gr.update(choices=trash_choices()))
+        return (gr.update(choices=profile_choices()), "音色保存失败，请检查参考音频后重试。", None, "", gr.update(visible=not list_profiles()), gr.update(choices=trash_choices()))
 
 
 def rename_voice_profile(profile_id: str, name: str):
@@ -550,8 +331,9 @@ def rename_voice_profile(profile_id: str, name: str):
         metadata["updated_at"] = datetime.now().isoformat(timespec="seconds")
         (folder / "profile.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         return (gr.update(choices=profile_choices(), value=profile_id), f"音色已改名为 **{html.escape(clean_name)}**。", _profile_audio_path(profile_id), clean_name, gr.update(visible=False), gr.update(choices=trash_choices()))
-    except Exception as exc:
-        return (gr.update(choices=profile_choices()), f"改名失败：{html.escape(str(exc))}", _profile_audio_path(profile_id), clean_name, gr.update(visible=False), gr.update(choices=trash_choices()))
+    except Exception:
+        LOG.exception("Could not rename voice profile %s", profile_id)
+        return (gr.update(choices=profile_choices()), "改名失败，请重试。", _profile_audio_path(profile_id), clean_name, gr.update(visible=False), gr.update(choices=trash_choices()))
 
 
 def move_profile_to_trash(profile_id: str):
@@ -571,8 +353,9 @@ def move_profile_to_trash(profile_id: str):
         return (gr.update(choices=profile_choices(), value=next_id), status, _profile_audio_path(next_id),
                 next((item["name"] for item in list_profiles() if item["id"] == next_id), ""),
                 gr.update(visible=not profile_choices()), gr.update(choices=trash_choices(), value=profile_id))
-    except Exception as exc:
-        return (gr.update(choices=choices), f"无法移入回收站：{html.escape(str(exc))}", _profile_audio_path(profile_id), "", gr.update(visible=not choices), gr.update(choices=trash_choices()))
+    except Exception:
+        LOG.exception("Could not move voice profile %s to trash", profile_id)
+        return (gr.update(choices=choices), "无法移入回收站，请重试。", _profile_audio_path(profile_id), "", gr.update(visible=not choices), gr.update(choices=trash_choices()))
 
 
 def restore_profile(profile_id: str):
@@ -591,8 +374,9 @@ def restore_profile(profile_id: str):
         status = f"**{html.escape(metadata['name'])}** 已恢复。"
         return (gr.update(choices=profile_choices(), value=profile_id), status, _profile_audio_path(profile_id), metadata["name"],
                 gr.update(visible=False), gr.update(choices=trash_choices(), value=None))
-    except Exception as exc:
-        return (gr.update(choices=profile_choices()), f"恢复失败：{html.escape(str(exc))}", None, "", gr.update(visible=not list_profiles()), gr.update(choices=trash_choices()))
+    except Exception:
+        LOG.exception("Could not restore voice profile %s", profile_id)
+        return (gr.update(choices=profile_choices()), "恢复失败，请重试。", None, "", gr.update(visible=not list_profiles()), gr.update(choices=trash_choices()))
 
 
 def export_voice_profile(profile_id: str):
@@ -607,21 +391,22 @@ def export_voice_profile(profile_id: str):
             archive.write(folder / "profile.json", "profile.json")
             archive.write(folder / metadata["audio_file"], metadata["audio_file"])
         return gr.update(value=str(zip_path), visible=True), f"**{html.escape(metadata['name'])}** 的档案已打包。"
-    except Exception as exc:
-        return gr.update(value=None, visible=False), f"导出失败：{html.escape(str(exc))}"
+    except Exception:
+        LOG.exception("Could not export voice profile %s", profile_id)
+        return gr.update(value=None, visible=False), "导出失败，请重试。"
 
 
 def update_script_stats(script: str):
     lines = [line.strip() for line in (script or "").splitlines() if line.strip()]
     too_long = sum(len(line) > 4000 for line in lines)
     if not lines:
-        return "输入文本后，每一行会生成一段语音。", gr.update(interactive=False)
+        return "0 / 8 段", gr.update(interactive=False)
     if len(lines) > 8:
-        return f"⚠️ 当前 **{len(lines)} 行**；每批最多 8 行。", gr.update(interactive=False)
+        return f"{len(lines)} / 8 段 · 请减少或合并段落", gr.update(interactive=False)
     if too_long:
-        return f"⚠️ 有 **{too_long} 行**超过 4,000 字符，请拆分后再生成。", gr.update(interactive=False)
+        return f"有 {too_long} 段超过 4,000 字，请拆分后再生成", gr.update(interactive=False)
     count = sum(len(line) for line in lines)
-    return f"{len(lines)} 段 · {count:,} 个字符", gr.update(interactive=True)
+    return f"{len(lines)} / 8 段 · {count:,} 字", gr.update(interactive=True)
 
 
 def apply_sampling_preset(preset: str):
@@ -658,6 +443,8 @@ def _read_history(batch_id: str) -> dict[str, Any]:
 def history_choices() -> list[tuple[str, str]]:
     found: list[tuple[str, str, str]] = []
     for path in HISTORY_DIR.glob("*.json"):
+        if path.name.startswith("._"):
+            continue
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
             if not re.fullmatch(r"[a-f0-9]{32}", str(record.get("id", ""))) or path.name != f"{record['id']}.json":
@@ -673,6 +460,8 @@ def history_choices() -> list[tuple[str, str]]:
 
 def recover_interrupted_history():
     for path in HISTORY_DIR.glob("*.json"):
+        if path.name.startswith("._"):
+            continue
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
             batch_id = str(record.get("id", ""))
@@ -713,7 +502,8 @@ def _record_files(record: dict[str, Any]) -> list[str]:
 
 def _history_rows(record: dict[str, Any]) -> list[list[str]]:
     return [[str(item.get("index", "")), str(item.get("text", "")), str(item.get("status", "待生成")),
-             str(item.get("output_file") or ""), str(item.get("error") or "")]
+             str(item.get("output_file") or ""),
+             ("生成失败，可载入设置后重新生成。" if item.get("status") == "失败" and item.get("error") else "")]
             for item in record["lines"]]
 
 
@@ -726,8 +516,9 @@ def load_history_view(batch_id: str | None):
         completed = sum(line.get("status") == "已完成" for line in record["lines"])
         status = f"**{html.escape(record.get('profile_name', '音色'))}** · {completed}/{len(record['lines'])} 段完成 · {str(record.get('created_at', ''))[:16].replace('T', ' ')}"
         return status, (files[0] if files else None), files, _history_rows(record)
-    except Exception as exc:
-        return f"读取记录失败：{html.escape(str(exc))}", None, [], []
+    except Exception:
+        LOG.exception("Could not load generation history %s", batch_id)
+        return "读取记录失败，请刷新记录列表后重试。", None, [], []
 
 
 def load_history_settings(batch_id: str | None):
@@ -765,11 +556,12 @@ def load_history_settings(batch_id: str | None):
             params.get("repetition_penalty", 1.05), params.get("max_new_tokens", 2048),
             status,
         )
-    except Exception as exc:
+    except Exception:
+        LOG.exception("Could not load generation settings %s", batch_id)
         return (
             gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), DEFAULT_CUSTOM_VOICE_INSTRUCTION,
             "", gr.update(), True, 0.9, 1.0, 50, 1.05, 2048,
-            f"无法载入设置：{html.escape(str(exc))}",
+            "无法载入设置，请刷新记录后重试。",
         )
 
 
@@ -792,10 +584,10 @@ def _batch_message(record: dict[str, Any], stopped: bool = False):
     failed = sum(item.get("status") == "失败" for item in lines)
     pending = sum(item.get("status") == "待生成" for item in lines)
     if stopped:
-        return f"已停止 · {completed}/{len(lines)} 段完成。已有音频已保存，可继续未完成部分。"
+        return f"已暂停 · 完成 {completed}/{len(lines)} 段。已完成的音频已保存。"
     if failed or pending:
-        return f"完成 {completed}/{len(lines)} 段 · 失败 {failed} 段 · 待生成 {pending} 段。可重试或继续未完成部分。"
-    return f"已完成 **{completed} 段**。所有 WAV 已保存到外接盘。"
+        return f"完成 {completed}/{len(lines)} 段 · {failed} 段失败 · {pending} 段待生成。"
+    return f"已完成 {completed} 段 · 可试听或下载。"
 
 
 def _stream_batch(record: dict[str, Any], indexes: list[int], progress):
@@ -807,7 +599,7 @@ def _stream_batch(record: dict[str, Any], indexes: list[int], progress):
     voice_mode = record.get("model_mode", "clone")
     if voice_mode not in {"clone", "custom_voice"}:
         voice_mode = "clone"
-    yield audio, files, "正在载入音色…", rows, state, gr.update(choices=history_choices(), value=batch_id), gr.update(visible=True), _retry_button_update(state, running=True)
+    yield audio, files, "正在加载声音…", rows, state, gr.update(choices=history_choices(), value=batch_id), gr.update(visible=True), _retry_button_update(state, running=True)
     try:
         with INFERENCE_LOCK:
             _ensure_model(voice_mode)
@@ -826,7 +618,7 @@ def _stream_batch(record: dict[str, Any], indexes: list[int], progress):
         _write_history(record)
         audio, files = _visible_result(record)
         state = _progress_state(record)
-        yield audio, files, f"模型或音色载入失败：{html.escape(str(exc))}", _history_rows(record), state, gr.update(choices=history_choices(), value=batch_id), gr.update(visible=False), _retry_button_update(state)
+        yield audio, files, "声音载入失败，请检查音色后重试。", _history_rows(record), state, gr.update(choices=history_choices(), value=batch_id), gr.update(visible=False), _retry_button_update(state)
         return
 
     params = record["params"]
@@ -852,7 +644,7 @@ def _stream_batch(record: dict[str, Any], indexes: list[int], progress):
         _write_history(record)
         progress((position - 1) / max(total, 1), desc=f"正在合成 {position}/{total}")
         state = _progress_state(record)
-        yield *_visible_result(record), f"正在合成第 {line_index}/{len(record['lines'])} 段…", _history_rows(record), state, gr.update(choices=history_choices(), value=batch_id), gr.update(visible=True), _retry_button_update(state, running=True)
+        yield *_visible_result(record), f"正在生成第 {line_index}/{len(record['lines'])} 段…", _history_rows(record), state, gr.update(choices=history_choices(), value=batch_id), gr.update(visible=True), _retry_button_update(state, running=True)
         try:
             with INFERENCE_LOCK:
                 _ensure_model(voice_mode)
@@ -914,7 +706,7 @@ def synthesize(
         yield from _error_generation("单行文本超过 4,000 字符，请拆成更短的语段。")
         return
     if voice_mode not in {"clone", "custom_voice"}:
-        yield from _error_generation("请选择一种音色模式。")
+        yield from _error_generation("请选择声音来源。")
         return
     if voice_mode == "clone":
         if not profile_id:
@@ -932,7 +724,7 @@ def synthesize(
         voice_params: dict[str, Any] = {}
     else:
         if custom_voice_speaker not in CUSTOM_VOICE_LABELS:
-            yield from _error_generation("请选择一个官方预制音色。")
+            yield from _error_generation("请选择一个内置音色。")
             return
         record_voice = {
             "profile_id": None,
@@ -973,207 +765,708 @@ def retry_incomplete(retry_state: dict[str, Any] | None, progress=gr.Progress())
             yield from _error_generation("这批语段已全部完成。")
             return
         yield from _stream_batch(record, indexes, progress)
-    except Exception as exc:
+    except Exception:
         LOG.exception("Could not resume generation history")
-        yield from _error_generation(f"无法继续这条记录：{html.escape(str(exc))}")
+        yield from _error_generation("无法继续这批口播，请刷新记录后重试。")
 
 
 def request_stop():
     STOP_REQUESTED.set()
-    return "将在当前语段结束后停止，已完成的音频会保留。"
+    return "正在完成当前段，随后暂停。已完成的音频会保留。"
 
 
 def _outputs_for_generation():
     return [result_audio, output_files, generation_status, line_table, retry_state, history_picker, stop_button, retry_button]
 
 
-initial_profiles = profile_choices()
-initial_profile_id = initial_profiles[0][1] if initial_profiles else None
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+
+TASK_LOCK = threading.Lock()
+ACTIVE_TASK_ID: str | None = None
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
+UPLOAD_DIR = ROOT / "cache" / "uploads"
+VOICE_DESIGN_PREVIEW_DIR = ROOT / "cache" / "voice-design-previews"
+for directory in (UPLOAD_DIR, VOICE_DESIGN_PREVIEW_DIR):
+    directory.mkdir(parents=True, exist_ok=True)
+
+
+def _active_task() -> str | None:
+    with TASK_LOCK:
+        return ACTIVE_TASK_ID
+
+
+def _claim_task(task_id: str) -> None:
+    global ACTIVE_TASK_ID
+    with TASK_LOCK:
+        if ACTIVE_TASK_ID:
+            raise HTTPException(status_code=409, detail="当前有任务正在生成，请等它完成或暂停后再试。")
+        ACTIVE_TASK_ID = task_id
+
+
+def _release_task(task_id: str) -> None:
+    global ACTIVE_TASK_ID
+    with TASK_LOCK:
+        if ACTIVE_TASK_ID == task_id:
+            ACTIVE_TASK_ID = None
+
+
+def _profile_payload(metadata: dict[str, Any], trashed: bool = False) -> dict[str, Any]:
+    return {
+        "id": metadata["id"],
+        "name": metadata["name"],
+        "mode": metadata.get("mode", "icl"),
+        "ref_text": metadata.get("ref_text", ""),
+        "created_at": metadata.get("created_at", ""),
+        "voice_design": metadata.get("voice_design"),
+        "trashed": trashed,
+        "audio_url": f"/api/voices/{metadata['id']}/audio" + ("?trash=1" if trashed else ""),
+    }
+
+
+def _profile_audio_file(profile_id: str, trashed: bool = False) -> Path:
+    folder = _profile_dir(profile_id, allow_trash=trashed)
+    metadata = _read_profile(folder)
+    if not metadata:
+        raise HTTPException(status_code=404, detail="音色档案或参考音频不存在。")
+    return folder / metadata["audio_file"]
+
+
+def _history_payload(record: dict[str, Any]) -> dict[str, Any]:
+    public = dict(record)
+    lines: list[dict[str, Any]] = []
+    for source in record.get("lines", []):
+        line = dict(source)
+        safe_file = _safe_output_path(line.get("output_file"))
+        line["audio_url"] = f"/api/files/{Path(safe_file).name}" if safe_file else None
+        lines.append(line)
+    public["lines"] = lines
+    public["progress"] = (
+        sum(line.get("status") == "已完成" for line in lines) / max(len(lines), 1)
+    )
+    active = _active_task() == record.get("id")
+    if active:
+        public["state"] = "running"
+    elif lines and all(line.get("status") == "已完成" for line in lines):
+        public["state"] = "completed"
+    elif any(line.get("status") == "失败" for line in lines):
+        public["state"] = "partial" if any(line.get("status") == "已完成" for line in lines) else "failed"
+    elif any(line.get("status") in {"待生成", "进行中"} for line in lines):
+        public["state"] = "paused"
+    else:
+        public["state"] = "completed"
+    return public
+
+
+def _sampling_params(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        temperature = float(payload.get("temperature", 0.9))
+        top_p = float(payload.get("top_p", 1.0))
+        top_k = int(payload.get("top_k", 50))
+        repetition_penalty = float(payload.get("repetition_penalty", 1.05))
+        max_new_tokens = int(payload.get("max_new_tokens", 2048))
+        subtalker_temperature = float(payload.get("subtalker_temperature", 0.9))
+        subtalker_top_p = float(payload.get("subtalker_top_p", 1.0))
+        subtalker_top_k = int(payload.get("subtalker_top_k", 50))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="高级参数格式无效。")
+    if not 0.1 <= temperature <= 1.5:
+        raise HTTPException(status_code=422, detail="变化幅度需在 0.1 至 1.5 之间。")
+    if not 0.1 <= top_p <= 1.0:
+        raise HTTPException(status_code=422, detail="采样范围需在 0.1 至 1.0 之间。")
+    if not 1 <= top_k <= 100:
+        raise HTTPException(status_code=422, detail="候选数量需在 1 至 100 之间。")
+    if not 1.0 <= repetition_penalty <= 1.5:
+        raise HTTPException(status_code=422, detail="重复抑制需在 1.0 至 1.5 之间。")
+    if not 128 <= max_new_tokens <= 4096:
+        raise HTTPException(status_code=422, detail="单段长度上限需在 128 至 4,096 之间。")
+    if not 0.1 <= subtalker_temperature <= 1.5 or not 0.1 <= subtalker_top_p <= 1.0 or not 1 <= subtalker_top_k <= 100:
+        raise HTTPException(status_code=422, detail="声音细节参数超出范围。")
+    return {
+        "do_sample": bool(payload.get("do_sample", True)),
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "repetition_penalty": repetition_penalty,
+        "max_new_tokens": max_new_tokens,
+        "subtalker_dosample": bool(payload.get("subtalker_dosample", True)),
+        "subtalker_temperature": subtalker_temperature,
+        "subtalker_top_p": subtalker_top_p,
+        "subtalker_top_k": subtalker_top_k,
+    }
+
+
+def _line_voice(line: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    saved = line.get("voice")
+    if isinstance(saved, dict):
+        mode = saved.get("mode", record.get("model_mode", "clone"))
+        profile_id = saved.get("profile_id", record.get("profile_id"))
+        speaker = saved.get("speaker", record.get("speaker"))
+        instruction = saved.get("instruction", record.get("params", {}).get("instruction", ""))
+        language = saved.get("language", record.get("params", {}).get("language", "Auto"))
+        return {
+            "mode": mode,
+            "profile_id": profile_id,
+            "speaker": speaker,
+            "instruction": instruction,
+            "language": language,
+        }
+    return {
+        "mode": record.get("model_mode", "clone"),
+        "profile_id": record.get("profile_id"),
+        "speaker": record.get("speaker"),
+        "instruction": record.get("params", {}).get("instruction", ""),
+        "language": record.get("params", {}).get("language", "Auto"),
+    }
+
+
+def _run_api_job(batch_id: str, indexes: list[int]) -> None:
+    try:
+        record = _read_history(batch_id)
+        for line_index in indexes:
+            if STOP_REQUESTED.is_set():
+                break
+            line = next((item for item in record["lines"] if item.get("index") == line_index), None)
+            if not line or line.get("status") == "已完成":
+                continue
+            voice = _line_voice(line, record)
+            mode = voice["mode"]
+            line["status"] = "进行中"
+            line["error"] = ""
+            _write_history(record)
+            try:
+                if mode not in {"clone", "custom_voice"}:
+                    raise ValueError("这段的声音来源无效。")
+                with INFERENCE_LOCK:
+                    _ensure_model(mode)
+                    if mode == "clone":
+                        prompt_items = load_prompt(voice["profile_id"], allow_trash=True)
+                        waves, sample_rate = MODEL.generate_voice_clone(
+                            text=line["text"],
+                            language=voice["language"] or "Auto",
+                            voice_clone_prompt=prompt_items,
+                            **{key: value for key, value in record["params"].items() if key not in {"language", "instruction"}},
+                        )
+                    else:
+                        speaker = voice["speaker"]
+                        if speaker not in CUSTOM_VOICE_LABELS:
+                            raise ValueError("请选择有效的官方预制音色。")
+                        waves, sample_rate = MODEL.generate_custom_voice(
+                            text=line["text"],
+                            language=voice["language"] or "Auto",
+                            speaker=speaker,
+                            instruct=(voice.get("instruction") or None),
+                            **{key: value for key, value in record["params"].items() if key not in {"language", "instruction"}},
+                        )
+                output_name = f"{batch_id}_{int(line_index):02d}.wav"
+                sf.write(str(OUTPUT_DIR / output_name), waves[0], sample_rate, subtype="PCM_24")
+                line["status"] = "已完成"
+                line["output_file"] = output_name
+                line["error"] = ""
+                LOG.info("Generated batch %s line %s", batch_id, line_index)
+            except Exception as exc:
+                LOG.exception("Speech generation failed in batch %s line %s", batch_id, line_index)
+                line["status"] = "失败"
+                line["error"] = str(exc)[:500]
+            _write_history(record)
+    except Exception:
+        LOG.exception("Generation job failed for batch %s", batch_id)
+        try:
+            record = _read_history(batch_id)
+            for line in record.get("lines", []):
+                if line.get("status") == "进行中":
+                    line["status"] = "失败"
+                    line["error"] = "任务中断，可重试此段。"
+            _write_history(record)
+        except Exception:
+            LOG.exception("Could not save failed generation state for %s", batch_id)
+    finally:
+        _release_task(batch_id)
+
+
+def _launch_api_job(record: dict[str, Any], indexes: list[int]) -> None:
+    batch_id = record["id"]
+    _claim_task(batch_id)
+    STOP_REQUESTED.clear()
+    thread = threading.Thread(target=_run_api_job, args=(batch_id, indexes), daemon=True)
+    try:
+        thread.start()
+    except Exception:
+        _release_task(batch_id)
+        raise
+
+
 recover_interrupted_history()
 
-with gr.Blocks(title="Qwen3-TTS") as app:
-    gr.HTML(HEADER_HTML)
-    with gr.Tabs():
-        with gr.Tab("工作台", id="workbench"):
-            with gr.Row(elem_classes=["studio-grid"]):
-                with gr.Column(scale=4, min_width=310, elem_classes=["panel"]):
-                    voice_mode = gr.Radio(
-                        choices=[("音色克隆", "clone"), ("官方预制音色", "custom_voice")],
-                        value="clone", label="音色模式", elem_id="voice-mode",
-                    )
-                    with gr.Group(visible=True) as clone_voice_panel:
-                        gr.HTML('<div class="section-title">参考音频克隆</div><div class="section-note">选择或管理可复用的音色档案。</div>')
-                        profile_guide = gr.HTML(
-                            '<div class="warm-note"><strong>添加第一个音色</strong><br>上传或录制一段清晰的人声，填写逐字稿后保存。</div>',
-                            elem_id="first-use-guide", visible=not initial_profiles,
-                        )
-                        voice_radio = gr.Radio(
-                            choices=initial_profiles, value=initial_profile_id, label="选择音色",
-                            elem_id="voice-cards", container=False,
-                        )
-                        profile_status = gr.Markdown("", elem_classes=["status-box"])
-                        profile_preview = gr.Audio(
-                            label="参考音频试听", type="filepath", interactive=False,
-                            autoplay=False, elem_classes=["audio-panel"],
-                        )
-                        with gr.Accordion("管理当前音色", open=False):
-                            rename_name = gr.Textbox(label="音色名称", max_lines=1)
-                            with gr.Row():
-                                rename_button = gr.Button("保存名称", size="sm", variant="secondary")
-                                export_button = gr.Button("导出档案", size="sm", variant="secondary")
-                                trash_button = gr.Button("移入回收站", size="sm", variant="secondary")
-                            export_status = gr.Markdown("", elem_classes=["section-note"])
-                            export_file = gr.File(label="档案 ZIP", interactive=False, visible=False)
-                        with gr.Accordion("回收站", open=False):
-                            trash_dropdown = gr.Dropdown(choices=trash_choices(), label="已移入回收站的音色", value=None)
-                            restore_button = gr.Button("恢复所选音色", size="sm", variant="secondary")
-                        refresh_button = gr.Button("刷新音色列表", size="sm", variant="secondary")
-                        with gr.Accordion("添加音色", open=not initial_profiles):
-                            gr.Markdown("选择一段清晰的单人语音。ICL 需要逐字稿；仅提取音色不需要。", elem_classes=["section-note"])
-                            reference_audio = gr.Audio(
-                                sources=["upload", "microphone"], type="filepath", label="参考音频",
-                                elem_classes=["audio-panel"],
-                            )
-                            clone_mode = gr.Radio(choices=CLONE_MODES, value="icl", label="克隆方式")
-                            reference_text = gr.Textbox(
-                                label="参考音频逐字稿", placeholder="准确写下录音里说的内容。",
-                                lines=3, visible=True,
-                            )
-                            new_profile_name = gr.Textbox(label="新音色名称", placeholder="例如：中文旁白", max_lines=1)
-                            save_profile_button = gr.Button("保存音色", variant="primary")
-                    with gr.Group(visible=False) as custom_voice_panel:
-                        gr.HTML('<div class="section-title">官方预制音色</div><div class="section-note">选择内置说话人，并可通过风格指令调整表达方式。</div>')
-                        custom_voice_speaker = gr.Dropdown(
-                            choices=CUSTOM_VOICE_CHOICES, value="Uncle_Fu", label="官方音色",
-                            filterable=False,
-                        )
-                        custom_voice_instruction = gr.Textbox(
-                            label="风格指令", value=DEFAULT_CUSTOM_VOICE_INSTRUCTION,
-                            placeholder="例如：语速舒缓，情绪克制，像纪录片旁白。", lines=4,
-                        )
+app = FastAPI(title="Qwen3-TTS Local Studio", docs_url=None, redoc_url=None, openapi_url=None)
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
-                with gr.Column(scale=7, min_width=430, elem_classes=["panel"]):
-                    gr.HTML('<div class="section-title">语音合成</div><div class="section-note">逐行生成 · 每批最多 8 段。</div>')
-                    script_box = gr.Textbox(
-                        label="合成文本", placeholder="输入一行或多行文字……\n每行会单独合成为一段 WAV。",
-                        lines=9, max_lines=20, value="", elem_id="script-box",
-                    )
-                    script_stats = gr.Markdown("输入文本后，每一行会生成一段语音。", elem_classes=["section-note"])
-                    with gr.Row(elem_id="speech-options"):
-                        language_dropdown = gr.Dropdown(choices=LANGUAGES, value="Auto", label="语音语言", scale=3, filterable=False)
-                        do_sample = gr.Checkbox(value=True, label="随机采样", scale=2)
-                    sampling_preset = gr.Dropdown(
-                        choices=[("默认", "default"), ("较低随机度", "lower_randomness"), ("较高随机度", "higher_randomness")],
-                        value="default", label="快速预设", filterable=False,
-                    )
-                    with gr.Accordion("采样参数", open=False):
-                        with gr.Row():
-                            temperature = gr.Slider(minimum=0.1, maximum=1.5, value=0.9, step=0.05, label="Temperature · 变化度")
-                            top_p = gr.Slider(minimum=0.1, maximum=1.0, value=1.0, step=0.05, label="Top-p · 采样范围")
-                        with gr.Row():
-                            top_k = gr.Slider(minimum=1, maximum=100, value=50, step=1, label="Top-k · 候选数量")
-                            repetition_penalty = gr.Slider(minimum=1.0, maximum=1.5, value=1.05, step=0.01, label="重复抑制")
-                        max_new_tokens = gr.Slider(minimum=128, maximum=4096, value=2048, step=128, label="最大生成长度")
-                        gr.Markdown("预设只调整采样项，可继续微调。关闭随机采样后，温度、Top-p 和 Top-k 不参与生成。", elem_classes=["section-note"])
-                    with gr.Row():
-                        generate_button = gr.Button("开始生成", variant="primary", elem_id="generate-button", scale=4)
-                        stop_button = gr.Button("停止", variant="secondary", elem_id="stop-button", scale=1, visible=False)
-                    generation_status = gr.Markdown("等待输入文本。", elem_classes=["status-box"])
-                    line_table = gr.Dataframe(
-                        headers=["段落", "文本", "状态", "文件", "错误"], value=[], interactive=False,
-                        wrap=True, label="逐段进度", elem_id="line-table",
-                    )
-                    retry_state = gr.State({})
-                    retry_button = gr.Button("重试 / 继续未完成", variant="secondary", visible=False)
-                    gr.HTML('<div class="section-title output-title">生成结果</div>')
-                    result_audio = gr.Audio(label="试听第一段", type="filepath", interactive=False, autoplay=False, elem_classes=["audio-panel"])
-                    output_files = gr.Files(label="本批 WAV 文件", file_count="multiple", type="filepath", interactive=False)
 
-        with gr.Tab("生成记录", id="history"):
-            with gr.Column(elem_classes=["panel"]):
-                gr.HTML('<div class="section-title">生成记录</div><div class="section-note">文本、设置和逐段结果保存在外接盘，可试听、下载或载入参数。</div>')
-                with gr.Row():
-                    history_picker = gr.Dropdown(choices=history_choices(), label="选择一批生成记录", scale=5)
-                    history_refresh = gr.Button("刷新", size="sm", variant="secondary", scale=1)
-                history_status = gr.Markdown("选择一条记录查看结果。", elem_classes=["status-box"])
-                history_audio = gr.Audio(label="试听", type="filepath", interactive=False, autoplay=False, elem_classes=["audio-panel"])
-                history_files = gr.Files(label="本批音频", file_count="multiple", type="filepath", interactive=False)
-                history_table = gr.Dataframe(
-                    headers=["段落", "文本", "状态", "文件", "错误"], value=[], interactive=False,
-                    wrap=True, label="逐段结果", elem_id="history-table",
-                )
-                load_settings_button = gr.Button("载入这批设置到工作台", variant="secondary")
-                history_load_status = gr.Markdown("", elem_classes=["section-note"])
+@app.get("/", include_in_schema=False)
+def studio_home():
+    return FileResponse(FRONTEND_DIR / "index.html", media_type="text/html")
 
-    voice_mode.change(
-        fn=lambda value: (gr.update(visible=(value == "clone")), gr.update(visible=(value == "custom_voice"))),
-        inputs=[voice_mode], outputs=[clone_voice_panel, custom_voice_panel], queue=False,
-    )
-    clone_mode.change(lambda value: gr.update(visible=(value == "icl")), inputs=[clone_mode], outputs=[reference_text], queue=False)
-    sampling_preset.change(
-        fn=apply_sampling_preset, inputs=[sampling_preset],
-        outputs=[do_sample, temperature, top_p, top_k, repetition_penalty, max_new_tokens], queue=False,
-    )
-    voice_radio.change(fn=load_profile_status, inputs=[voice_radio], outputs=[profile_status, profile_preview, rename_name])
-    refresh_button.click(fn=refresh_profiles, inputs=[voice_radio], outputs=[voice_radio, profile_status, profile_preview, rename_name, profile_guide, trash_dropdown], queue=False)
-    save_profile_button.click(
-        fn=save_voice_profile, inputs=[new_profile_name, reference_audio, reference_text, clone_mode],
-        outputs=[voice_radio, profile_status, profile_preview, rename_name, profile_guide, trash_dropdown],
-    )
-    rename_button.click(
-        fn=rename_voice_profile, inputs=[voice_radio, rename_name],
-        outputs=[voice_radio, profile_status, profile_preview, rename_name, profile_guide, trash_dropdown], queue=False,
-    )
-    export_button.click(fn=export_voice_profile, inputs=[voice_radio], outputs=[export_file, export_status], queue=False)
-    trash_button.click(
-        fn=move_profile_to_trash, inputs=[voice_radio],
-        outputs=[voice_radio, profile_status, profile_preview, rename_name, profile_guide, trash_dropdown], queue=False,
-    )
-    restore_button.click(
-        fn=restore_profile, inputs=[trash_dropdown],
-        outputs=[voice_radio, profile_status, profile_preview, rename_name, profile_guide, trash_dropdown], queue=False,
-    )
-    script_box.input(
-        fn=update_script_stats, inputs=[script_box], outputs=[script_stats, generate_button],
-        queue=False, trigger_mode="always_last",
-    )
-    script_box.change(
-        fn=update_script_stats, inputs=[script_box], outputs=[script_stats, generate_button],
-        queue=False, trigger_mode="always_last",
-    )
-    generate_button.click(
-        fn=synthesize,
-        inputs=[voice_mode, voice_radio, custom_voice_speaker, custom_voice_instruction,
-                script_box, language_dropdown, do_sample, temperature, top_p, top_k, repetition_penalty, max_new_tokens],
-        outputs=_outputs_for_generation(),
-    )
-    retry_button.click(fn=retry_incomplete, inputs=[retry_state], outputs=_outputs_for_generation())
-    stop_button.click(fn=request_stop, inputs=[], outputs=[generation_status], queue=False)
-    history_picker.change(fn=load_history_view, inputs=[history_picker], outputs=[history_status, history_audio, history_files, history_table])
-    history_refresh.click(fn=lambda: gr.update(choices=history_choices()), inputs=[], outputs=[history_picker], queue=False)
-    load_settings_button.click(
-        fn=load_history_settings, inputs=[history_picker],
-        outputs=[voice_mode, clone_voice_panel, custom_voice_panel, voice_radio, custom_voice_speaker,
-                 custom_voice_instruction, script_box, language_dropdown, do_sample, temperature, top_p,
-                 top_k, repetition_penalty, max_new_tokens, history_load_status],
-    )
-    app.load(
-        fn=initialize_page,
-        inputs=[voice_radio],
-        outputs=[voice_radio, profile_status, profile_preview, rename_name, profile_guide, trash_dropdown, history_picker],
-    )
+
+@app.get("/api/state")
+def studio_state():
+    active_task = _active_task()
+    active_generation_id = active_task if active_task and re.fullmatch(r"[a-f0-9]{32}", active_task) and _manifest_path(active_task).is_file() else None
+    return {
+        "active_task": active_task,
+        "active_generation_id": active_generation_id,
+        "busy": active_task is not None,
+        "model_kind": MODEL_KIND,
+        "models": {
+            "clone": (MODEL_DIR / "model.safetensors").is_file(),
+            "custom_voice": (CUSTOMVOICE_MODEL_DIR / "model.safetensors").is_file(),
+            "voice_design": (VOICE_DESIGN_MODEL_DIR / "model.safetensors").is_file(),
+        },
+    }
+
+
+@app.get("/api/bootstrap")
+def bootstrap():
+    return {
+        "languages": [{"label": label, "value": value} for label, value in LANGUAGES],
+        "speakers": [
+            {"label": label, "value": value, "gender": "女声" if value in {"Vivian", "Serena", "Ono_Anna", "Sohee"} else "男声"}
+            for label, value in CUSTOM_VOICE_CHOICES
+        ],
+        "models": {
+            "clone": (MODEL_DIR / "model.safetensors").is_file(),
+            "custom_voice": (CUSTOMVOICE_MODEL_DIR / "model.safetensors").is_file(),
+            "voice_design": (VOICE_DESIGN_MODEL_DIR / "model.safetensors").is_file(),
+        },
+        "defaults": {
+            "instruction": DEFAULT_CUSTOM_VOICE_INSTRUCTION,
+            "temperature": 0.9,
+            "top_p": 1.0,
+            "top_k": 50,
+            "repetition_penalty": 1.05,
+            "max_new_tokens": 2048,
+        },
+    }
+
+
+@app.get("/api/voices")
+def get_voices():
+    return {
+        "profiles": [_profile_payload(item) for item in list_profiles()],
+        "trash": [_profile_payload(item, trashed=True) for item in list_trashed_profiles()],
+    }
+
+
+@app.get("/api/voices/{profile_id}/audio")
+def get_voice_audio(profile_id: str, trash: bool = False):
+    path = _profile_audio_file(profile_id, trashed=trash)
+    return FileResponse(path, media_type="audio/wav" if path.suffix.lower() == ".wav" else None)
+
+
+@app.post("/api/voices")
+def create_voice(
+    name: str = Form(...),
+    mode: str = Form("icl"),
+    ref_text: str = Form(""),
+    audio: UploadFile = File(...),
+):
+    if mode not in {"icl", "x_vector"}:
+        raise HTTPException(status_code=422, detail="请选择参考音频方式。")
+    suffix = Path(audio.filename or "").suffix.lower()
+    if suffix not in ACCEPTED_AUDIO:
+        raise HTTPException(status_code=415, detail="音频格式需为 WAV、FLAC、MP3、M4A、OGG、AIFF 或 WEBM。")
+    task_id = "voice-save:" + uuid.uuid4().hex
+    _claim_task(task_id)
+    source = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
+    try:
+        content = audio.file.read(MAX_UPLOAD_BYTES + 1)
+        audio.file.close()
+        if not content:
+            raise HTTPException(status_code=400, detail="参考音频为空。")
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="参考音频超过 100 MB。")
+        before = {item["id"] for item in list_profiles()}
+        source.write_bytes(content)
+        result = save_voice_profile(name, str(source), ref_text, mode, progress=lambda *args, **kwargs: None)
+        created = [item for item in list_profiles() if item["id"] not in before]
+        if not created:
+            raise HTTPException(status_code=400, detail=re.sub(r"<[^>]*>", "", str(result[1])))
+        return _profile_payload(created[0])
+    finally:
+        source.unlink(missing_ok=True)
+        _release_task(task_id)
+
+@app.patch("/api/voices/{profile_id}")
+def rename_voice(profile_id: str, payload: dict[str, Any]):
+    result = rename_voice_profile(profile_id, str(payload.get("name", "")))
+    if "已改名为" not in str(result[1]):
+        raise HTTPException(status_code=400, detail=re.sub(r"<[^>]*>", "", str(result[1])))
+    metadata = next((item for item in list_profiles() if item["id"] == profile_id), None)
+    if not metadata:
+        raise HTTPException(status_code=404, detail="音色档案不存在。")
+    return _profile_payload(metadata)
+
+
+@app.post("/api/voices/{profile_id}/trash")
+def trash_voice(profile_id: str):
+    result = move_profile_to_trash(profile_id)
+    if "已移入回收站" not in str(result[1]):
+        raise HTTPException(status_code=400, detail=re.sub(r"<[^>]*>", "", str(result[1])))
+    metadata = next((item for item in list_trashed_profiles() if item["id"] == profile_id), None)
+    return _profile_payload(metadata, trashed=True) if metadata else {"id": profile_id, "trashed": True}
+
+
+@app.post("/api/voices/{profile_id}/restore")
+def restore_voice(profile_id: str):
+    result = restore_profile(profile_id)
+    if "已恢复" not in str(result[1]):
+        raise HTTPException(status_code=400, detail=re.sub(r"<[^>]*>", "", str(result[1])))
+    metadata = next((item for item in list_profiles() if item["id"] == profile_id), None)
+    return _profile_payload(metadata) if metadata else {"id": profile_id, "trashed": False}
+
+
+@app.post("/api/voices/{profile_id}/export")
+def export_voice(profile_id: str):
+    result = export_voice_profile(profile_id)
+    value = result[0].get("value") if isinstance(result[0], dict) else None
+    path = Path(value) if value else None
+    if not path or not path.is_file() or path.resolve().parent != EXPORT_DIR.resolve():
+        raise HTTPException(status_code=400, detail=re.sub(r"<[^>]*>", "", str(result[1])))
+    return {"filename": path.name, "download_url": f"/api/exports/{path.name}"}
+
+
+@app.get("/api/exports/{filename}")
+def get_export(filename: str):
+    if Path(filename).name != filename:
+        raise HTTPException(status_code=404, detail="文件不存在。")
+    path = EXPORT_DIR / filename
+    if path.resolve().parent != EXPORT_DIR.resolve() or not path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在。")
+    return FileResponse(path, filename=path.name, media_type="application/zip")
+
+
+@app.post("/api/voices/design/preview")
+def create_voice_design_preview(payload: dict[str, Any]):
+    if not (VOICE_DESIGN_MODEL_DIR / "model.safetensors").is_file():
+        raise HTTPException(status_code=409, detail="VoiceDesign 权重尚未下载完成。")
+    text = str(payload.get("text", "")).strip()
+    instruction = str(payload.get("instruction", "")).strip()
+    language = str(payload.get("language", "Chinese"))
+    if not text or len(text) > 1000:
+        raise HTTPException(status_code=422, detail="试听文案需为 1 至 1,000 字符。")
+    if not instruction or len(instruction) > 1200:
+        raise HTTPException(status_code=422, detail="音色描述需为 1 至 1,200 字符。")
+    if language not in {value for _, value in LANGUAGES} - {"Auto"}:
+        raise HTTPException(status_code=422, detail="请选择支持的语言。")
+    params = _sampling_params(payload)
+    preview_id = uuid.uuid4().hex
+    task_id = f"design:{preview_id}"
+    _claim_task(task_id)
+    try:
+        with INFERENCE_LOCK:
+            _ensure_model("voice_design")
+            waves, sample_rate = MODEL.generate_voice_design(
+                text=text,
+                instruct=instruction,
+                language=language,
+                **params,
+            )
+        audio_path = VOICE_DESIGN_PREVIEW_DIR / f"{preview_id}.wav"
+        sf.write(str(audio_path), waves[0], sample_rate, subtype="PCM_24")
+        manifest = {
+            "id": preview_id,
+            "text": text,
+            "instruction": instruction,
+            "language": language,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        (VOICE_DESIGN_PREVIEW_DIR / f"{preview_id}.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return {**manifest, "audio_url": f"/api/voice-design/{preview_id}/audio"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOG.exception("VoiceDesign preview failed")
+        raise HTTPException(status_code=500, detail=f"试听生成失败：{str(exc)[:240]}")
+    finally:
+        _release_task(task_id)
+
+
+@app.get("/api/voice-design/{preview_id}/audio")
+def get_voice_design_audio(preview_id: str):
+    if not re.fullmatch(r"[a-f0-9]{32}", preview_id):
+        raise HTTPException(status_code=404, detail="试听不存在。")
+    path = VOICE_DESIGN_PREVIEW_DIR / f"{preview_id}.wav"
+    if not path.is_file() or path.resolve().parent != VOICE_DESIGN_PREVIEW_DIR.resolve():
+        raise HTTPException(status_code=404, detail="试听不存在。")
+    return FileResponse(path, media_type="audio/wav")
+
+
+@app.post("/api/voices/design/save")
+def save_voice_design(payload: dict[str, Any]):
+    preview_id = str(payload.get("preview_id", ""))
+    if not re.fullmatch(r"[a-f0-9]{32}", preview_id):
+        raise HTTPException(status_code=422, detail="试听编号无效。")
+    manifest_path = VOICE_DESIGN_PREVIEW_DIR / f"{preview_id}.json"
+    audio_path = VOICE_DESIGN_PREVIEW_DIR / f"{preview_id}.wav"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail="这条试听已不存在，请重新生成。")
+    name = str(payload.get("name", "")).strip()
+    if not name or len(name) > 36:
+        raise HTTPException(status_code=422, detail="音色名称需为 1 至 36 个字符。")
+    if _profile_name_taken(name):
+        raise HTTPException(status_code=409, detail="这个音色名称已存在。")
+    task_id = "voice-save:" + uuid.uuid4().hex
+    _claim_task(task_id)
+    try:
+        before = {item["id"] for item in list_profiles()}
+        result = save_voice_profile(name, str(audio_path), manifest["text"], "icl", progress=lambda *args, **kwargs: None)
+        created = [item for item in list_profiles() if item["id"] not in before]
+        if not created:
+            raise HTTPException(status_code=400, detail=re.sub(r"<[^>]*>", "", str(result[1])))
+        metadata = created[0]
+        folder = _profile_dir(metadata["id"])
+        metadata["voice_design"] = {
+            "instruction": manifest["instruction"],
+            "language": manifest["language"],
+            "preview_text": manifest["text"],
+        }
+        (folder / "profile.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        audio_path.unlink(missing_ok=True)
+        manifest_path.unlink(missing_ok=True)
+        return _profile_payload(metadata)
+    finally:
+        _release_task(task_id)
+
+@app.get("/api/history")
+def get_history():
+    items = []
+    for path in HISTORY_DIR.glob("*.json"):
+        if path.name.startswith("._"):
+            continue
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if record.get("id") and path.name == f"{record['id']}.json":
+                items.append(record)
+        except (OSError, ValueError, TypeError):
+            continue
+    items.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+    return [_history_payload(record) for record in items[:200]]
+
+
+@app.get("/api/history/{batch_id}")
+def get_history_record(batch_id: str):
+    try:
+        return _history_payload(_read_history(batch_id))
+    except (OSError, ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="生成记录不存在。")
+
+
+@app.get("/api/history/{batch_id}/settings")
+def history_settings(batch_id: str):
+    try:
+        record = _read_history(batch_id)
+    except (OSError, ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="生成记录不存在。")
+    return {
+        "voice_mode": record.get("model_mode", "clone"),
+        "profile_id": record.get("profile_id"),
+        "speaker": record.get("speaker"),
+        "instruction": record.get("params", {}).get("instruction", DEFAULT_CUSTOM_VOICE_INSTRUCTION),
+        "script": "\n".join(line.get("text", "") for line in record.get("lines", [])),
+        "segments": [
+            {
+                "text": line.get("text", ""),
+                **_line_voice(line, record),
+            }
+            for line in record.get("lines", [])
+        ],
+        "params": record.get("params", {}),
+    }
+
+
+@app.get("/api/files/{filename}")
+def get_audio_file(filename: str):
+    if Path(filename).name != filename:
+        raise HTTPException(status_code=404, detail="文件不存在。")
+    path_string = _safe_output_path(filename)
+    if not path_string:
+        raise HTTPException(status_code=404, detail="文件不存在。")
+    return FileResponse(path_string, media_type="audio/wav")
+
+
+@app.get("/api/history/{batch_id}/download")
+def download_history(batch_id: str):
+    try:
+        record = _read_history(batch_id)
+    except (OSError, ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="生成记录不存在。")
+    files = _record_files(record)
+    if not files:
+        raise HTTPException(status_code=404, detail="这批记录没有可下载的音频。")
+    zip_path = EXPORT_DIR / f"口播_{batch_id[:8]}.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in files:
+            archive.write(path, Path(path).name)
+        archive.writestr("generation.json", json.dumps(record, ensure_ascii=False, indent=2))
+    return FileResponse(zip_path, filename=zip_path.name, media_type="application/zip")
+
+
+@app.post("/api/jobs")
+def create_generation_job(payload: dict[str, Any]):
+    voice_mode = payload.get("voice_mode", "clone")
+    if voice_mode not in {"clone", "custom_voice"}:
+        raise HTTPException(status_code=422, detail="请选择有效的声音来源。")
+    if voice_mode == "clone" and not (MODEL_DIR / "model.safetensors").is_file():
+        raise HTTPException(status_code=409, detail="Base 权重未就绪。")
+    if voice_mode == "custom_voice" and not (CUSTOMVOICE_MODEL_DIR / "model.safetensors").is_file():
+        raise HTTPException(status_code=409, detail="CustomVoice 权重未就绪。")
+    params = _sampling_params(payload)
+    params["language"] = payload.get("language", "Auto")
+    if params["language"] not in {value for _, value in LANGUAGES}:
+        raise HTTPException(status_code=422, detail="请选择支持的语言。")
+    requested = payload.get("segments")
+    if isinstance(requested, list):
+        raw_segments = requested
+    else:
+        raw_segments = [{"text": line} for line in str(payload.get("script", "")).splitlines()]
+    segments = []
+    for item in raw_segments:
+        if isinstance(item, dict):
+            text = str(item.get("text", "")).strip()
+        else:
+            text = str(item).strip()
+        if text:
+            segments.append((item if isinstance(item, dict) else {}, text))
+    if not segments:
+        raise HTTPException(status_code=422, detail="请先输入要合成的文案。")
+    if len(segments) > 8:
+        raise HTTPException(status_code=422, detail="每批最多 8 段。")
+    if any(len(text) > 4000 for _, text in segments):
+        raise HTTPException(status_code=422, detail="单段文案不能超过 4,000 字。")
+    global_profile = next((item for item in list_profiles() if item["id"] == payload.get("profile_id")), None)
+    global_speaker = payload.get("speaker", "Uncle_Fu")
+    if voice_mode == "clone" and global_profile is None:
+        raise HTTPException(status_code=422, detail="请先添加并选择一个音色。")
+    if voice_mode == "custom_voice" and global_speaker not in CUSTOM_VOICE_LABELS:
+        raise HTTPException(status_code=422, detail="请选择有效的官方预制音色。")
+
+    normalized_lines = []
+    for index, (segment, text) in enumerate(segments, start=1):
+        mode = segment.get("voice_mode") or voice_mode
+        if mode not in {"clone", "custom_voice"}:
+            raise HTTPException(status_code=422, detail=f"第 {index} 段的声音来源无效。")
+        language = segment.get("language") or params["language"]
+        if language not in {value for _, value in LANGUAGES}:
+            raise HTTPException(status_code=422, detail=f"第 {index} 段的语言无效。")
+        if mode == "clone":
+            profile_id = segment.get("profile_id") or payload.get("profile_id")
+            profile = next((item for item in list_profiles() if item["id"] == profile_id), None)
+            if not profile:
+                raise HTTPException(status_code=422, detail=f"第 {index} 段的音色不可用。")
+            voice = {"mode": mode, "profile_id": profile_id, "speaker": None, "instruction": "", "language": language}
+        else:
+            speaker = segment.get("speaker") or global_speaker
+            if speaker not in CUSTOM_VOICE_LABELS:
+                raise HTTPException(status_code=422, detail=f"第 {index} 段的官方音色无效。")
+            instruction = segment.get("instruction", payload.get("instruction", DEFAULT_CUSTOM_VOICE_INSTRUCTION))
+            if len(str(instruction)) > 1200:
+                raise HTTPException(status_code=422, detail=f"第 {index} 段的风格指令超过 1,200 字。")
+            voice = {
+                "mode": mode,
+                "profile_id": None,
+                "speaker": speaker,
+                "instruction": str(instruction).strip(),
+                "language": language,
+            }
+        normalized_lines.append({
+            "index": index,
+            "text": text,
+            "status": "待生成",
+            "output_file": None,
+            "error": "",
+            "voice": voice,
+        })
+
+    if all(line["voice"]["mode"] == "clone" for line in normalized_lines):
+        profile_ids = {line["voice"]["profile_id"] for line in normalized_lines}
+        profile_name = next((item["name"] for item in list_profiles() if item["id"] == next(iter(profile_ids))), "音色") if len(profile_ids) == 1 else "多种音色"
+        record_mode = "clone"
+    elif all(line["voice"]["mode"] == "custom_voice" for line in normalized_lines):
+        speakers = {line["voice"]["speaker"] for line in normalized_lines}
+        profile_name = CUSTOM_VOICE_LABELS[next(iter(speakers))] if len(speakers) == 1 else "多种音色"
+        record_mode = "custom_voice"
+    else:
+        profile_name = "多种音色"
+        record_mode = voice_mode
+
+    record = {
+        "schema_version": 2,
+        "id": uuid.uuid4().hex,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "model_mode": record_mode,
+        "profile_id": global_profile["id"] if global_profile else None,
+        "profile_name": profile_name,
+        "speaker": global_speaker if voice_mode == "custom_voice" else None,
+        "params": params | {"instruction": str(payload.get("instruction", "")).strip()},
+        "lines": normalized_lines,
+    }
+    _write_history(record)
+    try:
+        _launch_api_job(record, [line["index"] for line in normalized_lines])
+    except HTTPException:
+        for line in record["lines"]:
+            line["status"] = "待生成"
+        _write_history(record)
+        raise
+    return _history_payload(record)
+
+
+@app.get("/api/jobs/{batch_id}")
+def get_job(batch_id: str):
+    return get_history_record(batch_id)
+
+
+@app.post("/api/jobs/{batch_id}/stop")
+def stop_job(batch_id: str):
+    if _active_task() != batch_id:
+        raise HTTPException(status_code=409, detail="这批口播当前没有在生成。")
+    STOP_REQUESTED.set()
+    return {"stopping": True}
+
+
+@app.post("/api/history/{batch_id}/resume")
+def resume_history(batch_id: str):
+    try:
+        record = _read_history(batch_id)
+    except (OSError, ValueError, TypeError):
+        raise HTTPException(status_code=404, detail="生成记录不存在。")
+    indexes = [int(line["index"]) for line in record["lines"] if line.get("status") != "已完成"]
+    if not indexes:
+        raise HTTPException(status_code=409, detail="这批口播已全部完成。")
+    for line in record["lines"]:
+        if line.get("status") != "已完成":
+            line["status"] = "待生成"
+            line["error"] = ""
+    _write_history(record)
+    try:
+        _launch_api_job(record, indexes)
+    except HTTPException:
+        raise
+    return _history_payload(record)
+
 
 if __name__ == "__main__":
-    app.queue(default_concurrency_limit=1, max_size=32)
-    app.launch(
-        server_name="127.0.0.1",
-        server_port=int(os.environ.get("QWEN_TTS_PORT", "8000")),
-        share=False,
-        inbrowser=False,
-        quiet=True,
-        show_error=False,
-        max_file_size="100mb",
-        allowed_paths=[str(VOICE_DIR), str(OUTPUT_DIR), str(EXPORT_DIR)],
-        css=CSS,
-        theme=gr.themes.Base(primary_hue="emerald", neutral_hue="stone"),
+    import uvicorn
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=int(os.environ.get("QWEN_TTS_PORT", "8000")),
+        access_log=False,
+        log_level="warning",
     )
